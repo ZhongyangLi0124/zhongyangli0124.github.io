@@ -15,6 +15,10 @@ selected_papers: true # includes a list of papers marked as "selected={true}"
 social: true  # includes social icons at the bottom of the page
 ---
 
-Hi there, I am a Master's student in Computer Science at Johns Hopkins University, advised by Prof. Ashutosh Dutta. I am currently a research intern at the University of Maryland, advised by Prof. Tianyi Zhou. My research interests center on efficient and trustworthy foundation models, with a specific focus on Mixture-of-Experts (MoE), Vision Language Models (VLMs), and Test-Time Adaptation. My work aims to improve model generalization and efficiency.
+Hi there, I am a Master's student in Computer Science at [Johns Hopkins University](https://www.jhu.edu/), advised by Prof. [Ashutosh Dutta](https://ashutoshdutta.org/). Currently, I am a research intern at the University of Maryland, College Park, working with Prof. [Tianyi Zhou](https://tianyizhou.github.io/). My research interests center on efficient foundation models, with a specific focus on Mixture-of-Experts (MoE), Vision Language Models (VLMs), and Test-Time Adaptation. My work aims to improve model generalization and efficiency.
 
-I am actively looking for **PhD opportunities** starting Fall 2026. If interested, please feel free to reach out!
+<div class="alert alert-info" role="alert">
+  <i class="fas fa-bullhorn"></i> <strong>Seeking PhD Opportunities:</strong> I am actively applying for PhD positions for Fall 2026 in the US. If you are interested in my research, please feel free to contact me!
+</div>
+
+---
