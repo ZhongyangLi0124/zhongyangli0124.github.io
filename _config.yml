@@ -24,10 +24,11 @@ back_to_top: true # set to false to disable the back to top button
 # Social integration
 # -----------------------------------------------------------------------------
 github_username:    ZhongyangLi0124
-google_scholar_id:  fx3FUcsAAAAJ&hl=en
+google_scholar_id: fx3FUcsAAAAJ
 linkedin_username:  zhongyangli0124
 x_username:         zhongyangli0124
-email_username:     zli300@jh.edu
+# email_username:     zli300@jh.edu
+# orcid_id:
 
 # -----------------------------------------------------------------------------
 # Theme
