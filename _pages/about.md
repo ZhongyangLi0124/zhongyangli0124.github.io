@@ -2,7 +2,7 @@
 layout: about
 title: About
 permalink: /
-subtitle: <a href='https://www.jhu.edu/'>Johns Hopkins University</a>.
+subtitle: <a href='mailto:zli300@jh.edu'>zli300@jh.edu</a>
 
 profile:
   align: right
