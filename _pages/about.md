@@ -7,7 +7,7 @@ subtitle: <a href='mailto:zli300@jh.edu'>zli300@jh.edu</a>
 profile:
   align: right
   image: profile.jpg
-  image_circular: false # 如果你想要圆头像改成 true
+  image_circular: false
 
 
 news: true  # includes a list of news items
