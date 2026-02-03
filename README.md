@@ -229,6 +229,7 @@ Workshop on Structured Probabilistic Inference & Generative Modeling (ICML: <a h
 
 ## Lighthouse PageSpeed Insights
 
+
 ### Desktop
 
 [![Google Lighthouse PageSpeed Insights](lighthouse_results/desktop/pagespeed.svg)](https://htmlpreview.github.io/?https://github.com/alshedivat/al-folio/blob/main/lighthouse_results/desktop/alshedivat_github_io_al_folio_.html)
