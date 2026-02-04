@@ -18,7 +18,7 @@ selected_papers: true
 social: true 
 ---
 
-Hi there, I am a Master's student in Computer Science at Johns Hopkins University, advised by Prof. [Ashutosh Dutta](https://ashutoshdutta.org/). Currently, I am a research intern at the University of Maryland, College Park, working with Prof. [Tianyi Zhou](https://tianyizhou.github.io/). My research interests center on efficient foundation models, with a specific focus on Mixture-of-Experts (MoE) and Test-Time Adaptation. My work aims to improve model's generalization and efficiency.
+Hi there, I am a Master's student in Computer Science at **Johns Hopkins University**, advised by Prof. [Ashutosh Dutta](https://ashutoshdutta.org/). Currently, I am a research intern at the **University of Maryland, College Park**, working with Prof. [Tianyi Zhou](https://tianyizhou.github.io/). My research interests center on efficient foundation models, with a specific focus on Mixture-of-Experts (MoE) and Test-Time Adaptation. My work aims to improve model's generalization and efficiency.
 
 <div style="clear: both;"></div>
 
