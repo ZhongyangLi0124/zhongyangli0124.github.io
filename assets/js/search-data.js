@@ -385,7 +385,7 @@ ninja.data = [{
           section: "Books",handler: () => {
               window.location.href = "/books/the_godfather/";
             },},{id: "news-started-my-research-internship-at-the-university-of-maryland-college-park-advised-by-prof-tianyi-zhou-i-will-be-working-on-efficient-training-and-inference-for-moe-models",
-          title: 'Started my research internship at the University of Maryland, College Park, advised by...',
+          title: '👨‍💻Started my research internship at the University of Maryland, College Park, advised by...',
           description: "",
           section: "News",},{id: "news-our-paper-c3po-critical-layer-core-expert-collaborative-pathway-optimization-has-been-accepted-to-colm-2025",
           title: '🎉 Our paper C3PO (Critical-Layer, Core-Expert, Collaborative Pathway Optimization) has been accepted to...',
