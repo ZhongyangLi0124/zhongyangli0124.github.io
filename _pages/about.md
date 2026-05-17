@@ -2,7 +2,7 @@
 layout: about
 title: About
 permalink: /
-subtitle: <a href='mailto:zli300@jh.edu'>zli300@jh.edu</a>
+subtitle: <a href='mailto:li.17258@buckeyemail.osu.edu'>li.17258@buckeyemail.osu.edu</a>
 
 profile:
   align: right
@@ -18,10 +18,6 @@ selected_papers: true
 social: true 
 ---
 
-Hi there, I am a Master's student in Computer Science at **Johns Hopkins University**, advised by Prof. [Ashutosh Dutta](https://ashutoshdutta.org/). Currently, I am a research intern at the **University of Maryland, College Park**, working with Prof. [Tianyi Zhou](https://tianyizhou.github.io/). My research interests center on efficient foundation models, with a specific focus on Mixture-of-Experts (MoE) and Test-Time Adaptation. My work aims to improve model's generalization and efficiency.
+Hi there, I am an incoming CS PhD student at [**OSU NLP**](https://x.com/osunlp?lang=en), where I will be advised by Prof. [Huan Sun](https://u.osu.edu/ihudas/people/). I am currently a Master's student in Computer Science at **Johns Hopkins University**, advised by Prof. [Ashutosh Dutta](https://ashutoshdutta.org/), and a research intern at the **University of Maryland, College Park**, working with Prof. [Tianyi Zhou](https://tianyizhou.github.io/). My research interests center on efficient foundation models, with a specific focus on Mixture-of-Experts (MoE) and Test-Time Adaptation. My work aims to improve model's generalization and efficiency. Looking ahead, my future research will focus on **LLM agents**.
 
 <div style="clear: both;"></div>
-
-<div class="alert alert-info" role="alert">
-  <i class="fas fa-bullhorn"></i> <strong>Seeking PhD Opportunities:</strong> I am actively applying for PhD positions for Fall 2026 in the US. If you are interested in my research, please feel free to contact me!
-</div>
