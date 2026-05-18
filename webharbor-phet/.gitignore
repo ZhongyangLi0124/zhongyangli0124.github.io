@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+sites/*/instance/*
+!sites/*/instance/.gitkeep
+sites/*/instance_seed/*.db
+sites/*/scraped_data/*
+!sites/*/scraped_data/.gitkeep

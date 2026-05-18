@@ -1,0 +1,7 @@
+instance/*
+!instance/.gitkeep
+instance_seed/*.db
+scraped_data/*
+!scraped_data/.gitkeep
+__pycache__/
+*.pyc
