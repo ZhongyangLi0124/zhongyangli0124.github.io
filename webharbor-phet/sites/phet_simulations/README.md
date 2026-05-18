@@ -16,6 +16,7 @@ account-gated save flow.
 | Languages         |      28 | Includes RTL (Arabic, Hebrew, Persian)       |
 | Teacher activities|      14 | Linked to specific simulations               |
 | Benchmark users   |       4 | Pre-saved sims on teacher account            |
+| Benchmark tasks   |      43 | `tasks.jsonl` — agent prompts at port 40015  |
 
 ## Routes
 
@@ -49,10 +50,16 @@ account-gated save flow.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install Flask==3.1.0 Flask-SQLAlchemy==3.1.1 Flask-Login==0.6.3 \
+    Flask-WTF==1.2.2 Flask-Bcrypt==1.0.1 Werkzeug==3.1.3 Jinja2==3.1.4 \
+    SQLAlchemy==2.0.36 WTForms==3.2.1 email-validator==2.2.0
 PORT=40015 .venv/bin/python app.py
 # → http://127.0.0.1:40015/
 ```
+
+Dependency versions match the WebHarbor root `Dockerfile`. Per the project
+convention, no per-site `requirements.txt` is shipped — all sites share
+the same pinned stack from the container image.
 
 The first boot creates `instance/phet_simulations.db` and runs all seed
 functions. Subsequent boots are no-ops — seed functions early-return when

@@ -28,7 +28,7 @@ webharbor-phet/
     └── phet_simulations/       ← drop into <WebHarbor-fork>/sites/
         ├── app.py              ← Flask app: 7 models, 17 routes, full seed
         ├── _health.py
-        ├── requirements.txt
+        ├── tasks.jsonl         ← 43 benchmark prompts (agent eval input)
         ├── README.md           ← per-site notes
         ├── .gitignore
         ├── templates/          ← 16 Jinja2 templates
