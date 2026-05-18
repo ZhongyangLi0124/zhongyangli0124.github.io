@@ -1,0 +1,2857 @@
+From b4cea555acdb76aa39260f9c7835a744f30b6d0c Mon Sep 17 00:00:00 2001
+From: Zhongyang Li <zhongyangli0124@users.noreply.github.com>
+Date: Mon, 18 May 2026 11:44:45 +0000
+Subject: [PATCH] feat(phet_simulations): add new site
+
+Adds Flask app, templates, and seed DB for PhET Interactive Simulations
+(https://phet.colorado.edu/), claiming port slot 40015.
+
+Catalog: 98 simulations across 5 subjects (physics, chemistry, math,
+biology, earth-science), 4 grade levels (elementary, middle, high,
+university), and 28 languages (incl. 3 RTL scripts). Every primary
+filter bucket clears the >=20-record threshold.
+
+Models: User, Subject, GradeLevel, Language, Simulation, Activity,
+SavedSimulation. Routes: 17 public + 2 JSON APIs + /_health, all
+reachable from /. Auth via Flask-Login + bcrypt; saves via CSRF-protected
+JSON endpoints.
+
+Idempotency: every seed_* helper early-returns when its table is
+populated; verified byte-identical (md5 e094a2ee...) across the
+control_server reset cycle (rm -rf instance; cp -a instance_seed instance;
+re-import app). Tested under the exact Dockerfile pin set (Flask 3.1.0,
+SQLAlchemy 2.0.36, Werkzeug 3.1.3).
+
+Per the port-slot convention, also:
+- websyn_start.sh: append to SITES, bump 15 -> 16 in startup messages
+- control_server.py: append 'phet_simulations' to SITES list
+- Dockerfile: EXPOSE 40000-40014 -> 40000-40015
+
+Seed DB (instance_seed/phet_simulations.db, 143KB) packs into a 17KB
+phet_simulations.tar.gz via scripts/extract_assets.sh and ships
+separately via the Hugging Face dataset. .assets-revision will need a
+bump after the HF PR merges.
+
+tasks.jsonl: 43 benchmark prompts covering catalog browse, subject
+filters, simulation detail extraction, search, translations, teacher
+activities, and the account save flow.
+---
+ Dockerfile                                    |    2 +-
+ control_server.py                             |    2 +-
+ sites/phet_simulations/_health.py             |   11 +
+ sites/phet_simulations/app.py                 | 1263 +++++++++++++++++
+ sites/phet_simulations/static/css/style.css   |  433 ++++++
+ sites/phet_simulations/static/js/main.js      |   59 +
+ sites/phet_simulations/tasks.jsonl            |   43 +
+ sites/phet_simulations/templates/404.html     |   14 +
+ .../phet_simulations/templates/_sim_card.html |   18 +
+ sites/phet_simulations/templates/about.html   |   38 +
+ .../templates/accessibility.html              |   38 +
+ sites/phet_simulations/templates/account.html |   36 +
+ .../templates/activities.html                 |   45 +
+ .../templates/activity_detail.html            |   44 +
+ sites/phet_simulations/templates/base.html    |  100 ++
+ .../phet_simulations/templates/category.html  |   19 +
+ sites/phet_simulations/templates/index.html   |   53 +
+ sites/phet_simulations/templates/login.html   |   25 +
+ .../phet_simulations/templates/register.html  |   37 +
+ sites/phet_simulations/templates/search.html  |   25 +
+ .../templates/simulation_detail.html          |  122 ++
+ .../templates/simulations.html                |   68 +
+ .../phet_simulations/templates/teachers.html  |   32 +
+ .../templates/translation_detail.html         |   25 +
+ .../templates/translations.html               |   21 +
+ websyn_start.sh                               |    8 +-
+ 26 files changed, 2575 insertions(+), 6 deletions(-)
+ create mode 100644 sites/phet_simulations/_health.py
+ create mode 100644 sites/phet_simulations/app.py
+ create mode 100644 sites/phet_simulations/static/css/style.css
+ create mode 100644 sites/phet_simulations/static/js/main.js
+ create mode 100644 sites/phet_simulations/tasks.jsonl
+ create mode 100644 sites/phet_simulations/templates/404.html
+ create mode 100644 sites/phet_simulations/templates/_sim_card.html
+ create mode 100644 sites/phet_simulations/templates/about.html
+ create mode 100644 sites/phet_simulations/templates/accessibility.html
+ create mode 100644 sites/phet_simulations/templates/account.html
+ create mode 100644 sites/phet_simulations/templates/activities.html
+ create mode 100644 sites/phet_simulations/templates/activity_detail.html
+ create mode 100644 sites/phet_simulations/templates/base.html
+ create mode 100644 sites/phet_simulations/templates/category.html
+ create mode 100644 sites/phet_simulations/templates/index.html
+ create mode 100644 sites/phet_simulations/templates/login.html
+ create mode 100644 sites/phet_simulations/templates/register.html
+ create mode 100644 sites/phet_simulations/templates/search.html
+ create mode 100644 sites/phet_simulations/templates/simulation_detail.html
+ create mode 100644 sites/phet_simulations/templates/simulations.html
+ create mode 100644 sites/phet_simulations/templates/teachers.html
+ create mode 100644 sites/phet_simulations/templates/translation_detail.html
+ create mode 100644 sites/phet_simulations/templates/translations.html
+
+diff --git a/Dockerfile b/Dockerfile
+index 991e5ab..f653515 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -33,6 +33,6 @@ COPY control_server.py  /opt/control_server.py
+ COPY site_runner.py     /opt/site_runner.py
+ RUN chmod +x /opt/websyn_start.sh
+ 
+-EXPOSE 8101 40000-40014
++EXPOSE 8101 40000-40015
+ 
+ CMD ["/opt/websyn_start.sh"]
+diff --git a/control_server.py b/control_server.py
+index c255253..f606645 100644
+--- a/control_server.py
++++ b/control_server.py
+@@ -26,7 +26,7 @@ SITES = [
+     'allrecipes', 'amazon', 'apple', 'arxiv', 'bbc_news', 'booking',
+     'github', 'google_flights', 'google_map', 'google_search',
+     'huggingface', 'wolfram_alpha', 'cambridge_dictionary',
+-    'coursera', 'espn',
++    'coursera', 'espn', 'phet_simulations',
+ ]
+ BASE_PORT = 40000
+ WEBSYN_DIR = '/opt/WebSyn'
+diff --git a/sites/phet_simulations/_health.py b/sites/phet_simulations/_health.py
+new file mode 100644
+index 0000000..df949a4
+--- /dev/null
++++ b/sites/phet_simulations/_health.py
+@@ -0,0 +1,11 @@
++"""Simple health probe for the PhET Simulations mirror.
++
++Returned by the /_health endpoint. The control plane only inspects HTTP
++status, so any 2xx response with a JSON body is sufficient — the payload
++shape mirrors the scaffold default and is also surfaced verbatim to
++human reviewers.
++"""
++
++
++def health():
++    return {"ok": True, "site": "phet_simulations"}
+diff --git a/sites/phet_simulations/app.py b/sites/phet_simulations/app.py
+new file mode 100644
+index 0000000..0d86550
+--- /dev/null
++++ b/sites/phet_simulations/app.py
+@@ -0,0 +1,1263 @@
++"""PhET Interactive Simulations mirror.
++
++Mirrors the structure of https://phet.colorado.edu/ for WebHarbor agent
++evaluation: a Flask + SQLite app that serves a deterministic snapshot of
++the PhET simulation catalog (browse, filter, search, translations,
++teacher activities, account-gated saves).
++"""
++import json
++import os
++import re
++from datetime import date, datetime
++from pathlib import Path
++
++from flask import (
++    Flask, abort, flash, jsonify, redirect, render_template, request,
++    session, url_for,
++)
++from flask_bcrypt import Bcrypt
++from flask_login import (
++    LoginManager, UserMixin, current_user, login_required, login_user,
++    logout_user,
++)
++from flask_sqlalchemy import SQLAlchemy
++from flask_wtf import CSRFProtect
++from sqlalchemy import or_
++
++from _health import health as _health_payload
++
++
++BASE_DIR = Path(__file__).parent
++DB_DIR = BASE_DIR / "instance"
++DB_DIR.mkdir(exist_ok=True)
++DB_PATH = DB_DIR / "phet_simulations.db"
++
++app = Flask(__name__)
++app.config["SECRET_KEY"] = "phet-simulations-dev-secret-key-do-not-use-in-prod"
++app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
++app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
++app.config["WTF_CSRF_TIME_LIMIT"] = None
++app.config["TEMPLATES_AUTO_RELOAD"] = True
++app.config["JSON_SORT_KEYS"] = False
++
++db = SQLAlchemy(app)
++bcrypt = Bcrypt(app)
++login_manager = LoginManager(app)
++login_manager.login_view = "login"
++login_manager.login_message = "Please log in to access this page."
++csrf = CSRFProtect(app)
++
++
++# ---------------------------------------------------------------------------
++# Models
++# ---------------------------------------------------------------------------
++
++class User(UserMixin, db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
++    name = db.Column(db.String(80), nullable=False)
++    password_hash = db.Column(db.String(200), nullable=False)
++    role = db.Column(db.String(20), default="teacher")
++    institution = db.Column(db.String(200))
++    country = db.Column(db.String(80))
++    created_at = db.Column(db.DateTime, default=datetime.utcnow)
++    saved = db.relationship(
++        "SavedSimulation", backref="user", lazy="dynamic",
++        cascade="all, delete-orphan",
++    )
++
++
++class Subject(db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    slug = db.Column(db.String(40), unique=True, nullable=False, index=True)
++    name = db.Column(db.String(80), nullable=False)
++    icon = db.Column(db.String(40))
++    color = db.Column(db.String(20))
++    description = db.Column(db.Text)
++
++
++class GradeLevel(db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    slug = db.Column(db.String(40), unique=True, nullable=False, index=True)
++    name = db.Column(db.String(80), nullable=False)
++    age_range = db.Column(db.String(40))
++    sort_order = db.Column(db.Integer, default=0)
++
++
++class Language(db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    code = db.Column(db.String(10), unique=True, nullable=False, index=True)
++    name = db.Column(db.String(80), nullable=False)
++    native_name = db.Column(db.String(80), nullable=False)
++    sim_count = db.Column(db.Integer, default=0)
++    is_rtl = db.Column(db.Boolean, default=False)
++
++
++class Simulation(db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    slug = db.Column(db.String(80), unique=True, nullable=False, index=True)
++    title = db.Column(db.String(200), nullable=False)
++    short_description = db.Column(db.String(300), nullable=False)
++    overview = db.Column(db.Text, nullable=False)
++    subjects_json = db.Column(db.Text, default="[]")
++    grades_json = db.Column(db.Text, default="[]")
++    topics_json = db.Column(db.Text, default="[]")
++    languages_json = db.Column(db.Text, default='["en"]')
++    version = db.Column(db.String(20), default="1.0.0")
++    is_html5 = db.Column(db.Boolean, default=True)
++    is_featured = db.Column(db.Boolean, default=False)
++    is_new = db.Column(db.Boolean, default=False)
++    thumbnail = db.Column(db.String(120))
++    runtime_minutes = db.Column(db.Integer, default=20)
++    release_date = db.Column(db.Date)
++    download_count = db.Column(db.Integer, default=0)
++    play_count = db.Column(db.Integer, default=0)
++    activities = db.relationship(
++        "Activity", backref="simulation", lazy="dynamic",
++        cascade="all, delete-orphan",
++    )
++    saved_by = db.relationship(
++        "SavedSimulation", backref="simulation", lazy="dynamic",
++        cascade="all, delete-orphan",
++    )
++
++    def subjects(self):
++        return json.loads(self.subjects_json or "[]")
++
++    def grades(self):
++        return json.loads(self.grades_json or "[]")
++
++    def topics(self):
++        return json.loads(self.topics_json or "[]")
++
++    def languages(self):
++        return json.loads(self.languages_json or '["en"]')
++
++
++class Activity(db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    sim_id = db.Column(
++        db.Integer, db.ForeignKey("simulation.id"), nullable=False, index=True,
++    )
++    title = db.Column(db.String(200), nullable=False)
++    author = db.Column(db.String(120), nullable=False)
++    grade_level = db.Column(db.String(40))
++    duration_min = db.Column(db.Integer)
++    description = db.Column(db.Text, nullable=False)
++    file_type = db.Column(db.String(20), default="PDF")
++    download_count = db.Column(db.Integer, default=0)
++    published_date = db.Column(db.Date)
++
++
++class SavedSimulation(db.Model):
++    id = db.Column(db.Integer, primary_key=True)
++    user_id = db.Column(
++        db.Integer, db.ForeignKey("user.id"), nullable=False, index=True,
++    )
++    sim_id = db.Column(
++        db.Integer, db.ForeignKey("simulation.id"), nullable=False, index=True,
++    )
++    notes = db.Column(db.Text)
++    saved_at = db.Column(db.DateTime, default=datetime.utcnow)
++    __table_args__ = (db.UniqueConstraint("user_id", "sim_id"),)
++
++
++@login_manager.user_loader
++def load_user(uid):
++    return User.query.get(int(uid))
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++def _subject_map():
++    return {s.slug: s for s in Subject.query.all()}
++
++
++def _grade_map():
++    return {g.slug: g for g in GradeLevel.query.order_by(GradeLevel.sort_order).all()}
++
++
++def _language_map():
++    return {l.code: l for l in Language.query.order_by(Language.name).all()}
++
++
++def _saved_sim_ids():
++    if not current_user.is_authenticated:
++        return set()
++    return {s.sim_id for s in current_user.saved.all()}
++
++
++@app.context_processor
++def inject_globals():
++    return {
++        "site_title": "PhET Interactive Simulations",
++        "site_tagline": "Free online math and science simulations",
++        "current_year": datetime.utcnow().year,
++        "primary_subjects": Subject.query.order_by(Subject.name).all(),
++        "grade_levels": GradeLevel.query.order_by(GradeLevel.sort_order).all(),
++        "saved_sim_ids": _saved_sim_ids(),
++    }
++
++
++# ---------------------------------------------------------------------------
++# Routes — public
++# ---------------------------------------------------------------------------
++
++@app.route("/_health")
++def health():
++    return jsonify(_health_payload())
++
++
++@app.route("/")
++def index():
++    featured = (
++        Simulation.query.filter_by(is_featured=True)
++        .order_by(Simulation.title)
++        .limit(8)
++        .all()
++    )
++    new_sims = (
++        Simulation.query.filter_by(is_new=True)
++        .order_by(Simulation.release_date.desc())
++        .limit(6)
++        .all()
++    )
++    most_played = (
++        Simulation.query.order_by(Simulation.play_count.desc())
++        .limit(6)
++        .all()
++    )
++    total = Simulation.query.count()
++    total_languages = Language.query.count()
++    return render_template(
++        "index.html",
++        featured=featured,
++        new_sims=new_sims,
++        most_played=most_played,
++        total_simulations=total,
++        total_languages=total_languages,
++    )
++
++
++@app.route("/simulations")
++def simulations():
++    subject = request.args.get("subject", "").strip()
++    grade = request.args.get("grade", "").strip()
++    language = request.args.get("language", "").strip()
++    sort = request.args.get("sort", "title")
++    page = max(int(request.args.get("page", 1)), 1)
++    per_page = 12
++
++    query = Simulation.query
++    if subject:
++        query = query.filter(Simulation.subjects_json.like(f'%"{subject}"%'))
++    if grade:
++        query = query.filter(Simulation.grades_json.like(f'%"{grade}"%'))
++    if language:
++        query = query.filter(Simulation.languages_json.like(f'%"{language}"%'))
++
++    if sort == "newest":
++        query = query.order_by(Simulation.release_date.desc())
++    elif sort == "popular":
++        query = query.order_by(Simulation.play_count.desc())
++    else:
++        query = query.order_by(Simulation.title)
++
++    total = query.count()
++    sims = query.offset((page - 1) * per_page).limit(per_page).all()
++    total_pages = max((total + per_page - 1) // per_page, 1)
++
++    return render_template(
++        "simulations.html",
++        sims=sims,
++        total=total,
++        page=page,
++        total_pages=total_pages,
++        subject=subject,
++        grade=grade,
++        language=language,
++        sort=sort,
++        languages=Language.query.order_by(Language.name).all(),
++    )
++
++
++@app.route("/simulations/category/<slug>")
++def simulations_by_subject(slug):
++    subject = Subject.query.filter_by(slug=slug).first_or_404()
++    sims = (
++        Simulation.query.filter(Simulation.subjects_json.like(f'%"{slug}"%'))
++        .order_by(Simulation.title)
++        .all()
++    )
++    return render_template(
++        "category.html", subject=subject, sims=sims,
++    )
++
++
++@app.route("/simulation/<slug>")
++def simulation_detail(slug):
++    sim = Simulation.query.filter_by(slug=slug).first_or_404()
++    sim.play_count = (sim.play_count or 0) + 1
++    db.session.commit()
++
++    subjects_full = [
++        s for s in Subject.query.filter(Subject.slug.in_(sim.subjects())).all()
++    ]
++    grades_full = [
++        g for g in GradeLevel.query.filter(GradeLevel.slug.in_(sim.grades())).all()
++    ]
++    langs_full = [
++        l for l in Language.query.filter(Language.code.in_(sim.languages())).all()
++    ]
++
++    related = (
++        Simulation.query.filter(Simulation.id != sim.id)
++        .filter(
++            or_(*[
++                Simulation.subjects_json.like(f'%"{s}"%') for s in sim.subjects()
++            ])
++        )
++        .order_by(Simulation.title)
++        .limit(6)
++        .all()
++    )
++    activities = sim.activities.order_by(Activity.published_date.desc()).all()
++
++    is_saved = (
++        current_user.is_authenticated
++        and SavedSimulation.query.filter_by(
++            user_id=current_user.id, sim_id=sim.id,
++        ).first()
++        is not None
++    )
++
++    return render_template(
++        "simulation_detail.html",
++        sim=sim,
++        subjects=subjects_full,
++        grades=grades_full,
++        languages=langs_full,
++        related=related,
++        activities=activities,
++        is_saved=is_saved,
++    )
++
++
++@app.route("/search")
++def search():
++    q = request.args.get("q", "").strip()
++    sims = []
++    if q:
++        pattern = f"%{q}%"
++        sims = (
++            Simulation.query.filter(
++                or_(
++                    Simulation.title.ilike(pattern),
++                    Simulation.short_description.ilike(pattern),
++                    Simulation.topics_json.ilike(pattern),
++                )
++            )
++            .order_by(Simulation.title)
++            .all()
++        )
++    return render_template("search.html", query=q, sims=sims, total=len(sims))
++
++
++@app.route("/translations")
++def translations():
++    langs = (
++        Language.query.order_by(Language.sim_count.desc(), Language.name)
++        .all()
++    )
++    return render_template("translations.html", languages=langs)
++
++
++@app.route("/translations/<code>")
++def translation_detail(code):
++    lang = Language.query.filter_by(code=code).first_or_404()
++    sims = (
++        Simulation.query.filter(Simulation.languages_json.like(f'%"{code}"%'))
++        .order_by(Simulation.title)
++        .all()
++    )
++    return render_template(
++        "translation_detail.html", language=lang, sims=sims,
++    )
++
++
++@app.route("/teachers")
++def teachers():
++    featured = (
++        Activity.query.order_by(Activity.download_count.desc())
++        .limit(6)
++        .all()
++    )
++    return render_template("teachers.html", featured_activities=featured)
++
++
++@app.route("/teachers/activities")
++def activities():
++    grade = request.args.get("grade", "")
++    query = Activity.query
++    if grade:
++        query = query.filter_by(grade_level=grade)
++    items = query.order_by(Activity.published_date.desc()).all()
++    return render_template("activities.html", activities=items, grade=grade)
++
++
++@app.route("/teachers/activity/<int:activity_id>")
++def activity_detail(activity_id):
++    activity = Activity.query.get_or_404(activity_id)
++    activity.download_count = (activity.download_count or 0) + 1
++    db.session.commit()
++    return render_template("activity_detail.html", activity=activity)
++
++
++@app.route("/about")
++def about():
++    stats = {
++        "simulations": Simulation.query.count(),
++        "languages": Language.query.count(),
++        "subjects": Subject.query.count(),
++        "activities": Activity.query.count(),
++    }
++    return render_template("about.html", stats=stats)
++
++
++@app.route("/accessibility")
++def accessibility():
++    return render_template("accessibility.html")
++
++
++# ---------------------------------------------------------------------------
++# Routes — auth
++# ---------------------------------------------------------------------------
++
++EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
++
++
++@app.route("/register", methods=["GET", "POST"])
++def register():
++    if current_user.is_authenticated:
++        return redirect(url_for("account"))
++    if request.method == "POST":
++        email = request.form.get("email", "").strip().lower()
++        name = request.form.get("name", "").strip()
++        password = request.form.get("password", "")
++        institution = request.form.get("institution", "").strip()
++        country = request.form.get("country", "").strip()
++
++        if not EMAIL_RE.match(email):
++            flash("Please enter a valid email address.", "error")
++        elif len(name) < 2:
++            flash("Please enter your full name.", "error")
++        elif len(password) < 8:
++            flash("Password must be at least 8 characters.", "error")
++        elif User.query.filter_by(email=email).first():
++            flash("An account with that email already exists.", "error")
++        else:
++            user = User(
++                email=email,
++                name=name,
++                password_hash=bcrypt.generate_password_hash(password).decode(),
++                institution=institution,
++                country=country,
++            )
++            db.session.add(user)
++            db.session.commit()
++            login_user(user)
++            flash("Welcome to PhET! Your account is ready.", "success")
++            return redirect(url_for("account"))
++    return render_template("register.html")
++
++
++@app.route("/login", methods=["GET", "POST"])
++def login():
++    if current_user.is_authenticated:
++        return redirect(url_for("account"))
++    if request.method == "POST":
++        email = request.form.get("email", "").strip().lower()
++        password = request.form.get("password", "")
++        user = User.query.filter_by(email=email).first()
++        if user and bcrypt.check_password_hash(user.password_hash, password):
++            login_user(user)
++            flash(f"Welcome back, {user.name}!", "success")
++            return redirect(request.args.get("next") or url_for("account"))
++        flash("Invalid email or password.", "error")
++    return render_template("login.html")
++
++
++@app.route("/logout")
++@login_required
++def logout():
++    logout_user()
++    flash("You have been signed out.", "success")
++    return redirect(url_for("index"))
++
++
++@app.route("/account")
++@login_required
++def account():
++    saved_rows = (
++        SavedSimulation.query.filter_by(user_id=current_user.id)
++        .order_by(SavedSimulation.saved_at.desc())
++        .all()
++    )
++    return render_template("account.html", saved_rows=saved_rows)
++
++
++@app.route("/api/save-sim", methods=["POST"])
++@login_required
++def api_save_sim():
++    data = request.get_json(silent=True) or request.form
++    sim_id = data.get("sim_id")
++    notes = (data.get("notes") or "").strip()
++    if not sim_id:
++        return jsonify({"ok": False, "error": "missing sim_id"}), 400
++    sim = Simulation.query.get(int(sim_id))
++    if not sim:
++        return jsonify({"ok": False, "error": "unknown simulation"}), 404
++    existing = SavedSimulation.query.filter_by(
++        user_id=current_user.id, sim_id=sim.id,
++    ).first()
++    if existing:
++        existing.notes = notes or existing.notes
++    else:
++        db.session.add(
++            SavedSimulation(
++                user_id=current_user.id, sim_id=sim.id, notes=notes,
++            )
++        )
++    db.session.commit()
++    return jsonify({"ok": True, "saved": True, "sim_id": sim.id})
++
++
++@app.route("/api/unsave-sim", methods=["POST"])
++@login_required
++def api_unsave_sim():
++    data = request.get_json(silent=True) or request.form
++    sim_id = data.get("sim_id")
++    if not sim_id:
++        return jsonify({"ok": False, "error": "missing sim_id"}), 400
++    row = SavedSimulation.query.filter_by(
++        user_id=current_user.id, sim_id=int(sim_id),
++    ).first()
++    if row:
++        db.session.delete(row)
++        db.session.commit()
++    return jsonify({"ok": True, "saved": False, "sim_id": int(sim_id)})
++
++
++# ---------------------------------------------------------------------------
++# Error handlers
++# ---------------------------------------------------------------------------
++
++@app.errorhandler(404)
++def not_found(_):
++    return render_template("404.html"), 404
++
++
++# ---------------------------------------------------------------------------
++# Seed data
++# ---------------------------------------------------------------------------
++
++SUBJECTS_SEED = [
++    ("physics", "Physics", "atom", "#0079bf",
++     "Explore motion, forces, energy, waves, and electromagnetism."),
++    ("chemistry", "Chemistry", "flask", "#f5862e",
++     "Build molecules, balance equations, and probe matter."),
++    ("math", "Math", "function", "#6cba5c",
++     "Visualize numbers, fractions, functions, and geometry."),
++    ("biology", "Biology", "leaf", "#7a3e9d",
++     "Study cells, genetics, evolution, and the human body."),
++    ("earth-science", "Earth Science", "globe", "#c0392b",
++     "Investigate Earth's systems, climate, and the solar system."),
++]
++
++GRADES_SEED = [
++    ("elementary", "Elementary School", "Ages 5-10", 1),
++    ("middle", "Middle School", "Ages 11-13", 2),
++    ("high", "High School", "Ages 14-18", 3),
++    ("university", "University", "Ages 18+", 4),
++]
++
++LANGUAGES_SEED = [
++    ("en", "English", "English", False),
++    ("es", "Spanish", "Espanol", False),
++    ("zh-cn", "Chinese (Simplified)", "Zhongwen", False),
++    ("zh-tw", "Chinese (Traditional)", "Zhongwen", False),
++    ("fr", "French", "Francais", False),
++    ("de", "German", "Deutsch", False),
++    ("pt-br", "Portuguese (Brazilian)", "Portugues", False),
++    ("ru", "Russian", "Russkiy", False),
++    ("ar", "Arabic", "Al-Arabiyyah", True),
++    ("ja", "Japanese", "Nihongo", False),
++    ("ko", "Korean", "Hangugeo", False),
++    ("it", "Italian", "Italiano", False),
++    ("nl", "Dutch", "Nederlands", False),
++    ("pl", "Polish", "Polski", False),
++    ("sv", "Swedish", "Svenska", False),
++    ("tr", "Turkish", "Turkce", False),
++    ("vi", "Vietnamese", "Tieng Viet", False),
++    ("hi", "Hindi", "Hindi", False),
++    ("he", "Hebrew", "Ivrit", True),
++    ("el", "Greek", "Ellinika", False),
++    ("cs", "Czech", "Cestina", False),
++    ("hu", "Hungarian", "Magyar", False),
++    ("fi", "Finnish", "Suomi", False),
++    ("da", "Danish", "Dansk", False),
++    ("ro", "Romanian", "Romana", False),
++    ("uk", "Ukrainian", "Ukrayinska", False),
++    ("fa", "Persian", "Farsi", True),
++    ("id", "Indonesian", "Bahasa Indonesia", False),
++]
++
++
++def _slug(title):
++    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
++
++
++SIMULATIONS_SEED = [
++    # (title, subjects, grades, topics, languages_extra, featured, is_new, runtime, year, month, day, play_count)
++    ("Gravity and Orbits", ["physics", "earth-science"], ["middle", "high"],
++     ["gravity", "orbits", "circular motion", "satellites"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar", "pt-br", "ru"],
++     True, False, 25, 2024, 3, 12, 482103),
++    ("Forces and Motion: Basics", ["physics"], ["elementary", "middle", "high"],
++     ["newton's laws", "friction", "acceleration"],
++     ["es", "fr", "de", "zh-cn", "pt-br", "ru", "ja", "ko", "it", "nl"],
++     True, False, 20, 2023, 9, 5, 1204567),
++    ("Energy Skate Park", ["physics"], ["middle", "high", "university"],
++     ["kinetic energy", "potential energy", "conservation"],
++     ["es", "fr", "de", "pt-br", "ru", "zh-cn", "ja"],
++     True, False, 30, 2024, 1, 18, 768922),
++    ("Wave Interference", ["physics"], ["high", "university"],
++     ["waves", "interference", "diffraction", "light"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 11, 2, 312045),
++    ("Faraday's Law", ["physics"], ["high", "university"],
++     ["electromagnetism", "induction", "magnetic flux"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 20, 2023, 7, 14, 198320),
++    ("Charges and Fields", ["physics"], ["high", "university"],
++     ["electrostatics", "electric field", "voltage"],
++     ["es", "fr", "de", "pt-br"],
++     False, False, 25, 2023, 6, 22, 234110),
++    ("Pendulum Lab", ["physics", "math"], ["middle", "high"],
++     ["pendulum", "period", "gravity", "harmonic motion"],
++     ["es", "fr", "de", "zh-cn", "ja", "ko"],
++     True, False, 20, 2024, 2, 9, 521987),
++    ("Projectile Motion", ["physics"], ["high", "university"],
++     ["kinematics", "trajectory", "air resistance"],
++     ["es", "fr", "de", "zh-cn", "pt-br", "ja"],
++     False, False, 25, 2023, 10, 28, 645321),
++    ("Circuit Construction Kit: DC", ["physics"], ["middle", "high", "university"],
++     ["circuits", "ohm's law", "resistance", "current"],
++     ["es", "fr", "de", "pt-br", "zh-cn", "ja", "ko", "ru", "it"],
++     True, False, 30, 2024, 4, 1, 892341),
++    ("Bending Light", ["physics"], ["middle", "high"],
++     ["refraction", "snell's law", "optics"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 8, 15, 167823),
++    ("Color Vision", ["physics", "biology"], ["elementary", "middle"],
++     ["light", "color", "vision", "wavelength"],
++     ["es", "fr", "de", "ja"],
++     False, False, 15, 2023, 5, 19, 198765),
++    ("Coulomb's Law", ["physics"], ["high", "university"],
++     ["electrostatics", "force", "charge"],
++     ["es", "fr", "de"],
++     False, True, 20, 2025, 1, 14, 89234),
++    ("Hooke's Law", ["physics"], ["middle", "high"],
++     ["springs", "elasticity", "force"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 15, 2023, 4, 7, 154322),
++    ("Magnet and Compass", ["physics", "earth-science"], ["elementary", "middle"],
++     ["magnetism", "compass", "field lines"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar"],
++     False, False, 15, 2023, 3, 21, 232109),
++    ("Resistance in a Wire", ["physics"], ["high"],
++     ["resistance", "resistivity", "circuits"],
++     ["es", "fr", "de"],
++     False, False, 15, 2023, 2, 4, 87654),
++    ("Quantum Wave Interference", ["physics"], ["university"],
++     ["quantum mechanics", "wave-particle duality"],
++     ["es", "fr", "de"],
++     False, True, 35, 2025, 2, 28, 45120),
++
++    ("Build a Molecule", ["chemistry"], ["middle", "high"],
++     ["molecules", "atoms", "bonding"],
++     ["es", "fr", "de", "zh-cn", "ja", "pt-br", "ru"],
++     True, False, 25, 2024, 1, 22, 678901),
++    ("Balancing Chemical Equations", ["chemistry"], ["middle", "high"],
++     ["stoichiometry", "equations", "reactions"],
++     ["es", "fr", "de", "zh-cn", "pt-br", "ko"],
++     True, False, 20, 2023, 12, 6, 543210),
++    ("States of Matter", ["chemistry", "physics"], ["elementary", "middle", "high"],
++     ["solid", "liquid", "gas", "phase change"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar", "pt-br", "ru", "it"],
++     True, False, 25, 2024, 2, 14, 891234),
++    ("Concentration", ["chemistry"], ["high", "university"],
++     ["solutions", "molarity", "dilution"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 11, 9, 234567),
++    ("pH Scale", ["chemistry"], ["middle", "high"],
++     ["acids", "bases", "ph", "hydrogen ions"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 15, 2023, 9, 17, 312456),
++    ("Beer's Law Lab", ["chemistry"], ["high", "university"],
++     ["absorbance", "spectroscopy", "concentration"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 8, 3, 167890),
++    ("Acid-Base Solutions", ["chemistry"], ["high", "university"],
++     ["acids", "bases", "equilibrium"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 7, 25, 198432),
++    ("Reactions and Rates", ["chemistry"], ["high", "university"],
++     ["kinetics", "reactions", "activation energy"],
++     ["es", "fr", "de"],
++     False, False, 30, 2023, 6, 11, 145678),
++    ("Molecule Polarity", ["chemistry"], ["high"],
++     ["polarity", "electronegativity", "dipole"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 5, 8, 123456),
++    ("Isotopes and Atomic Mass", ["chemistry"], ["high", "university"],
++     ["isotopes", "atomic mass", "elements"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 4, 16, 98765),
++    ("Build an Atom", ["chemistry", "physics"], ["middle", "high"],
++     ["atoms", "protons", "neutrons", "electrons"],
++     ["es", "fr", "de", "zh-cn", "ja", "ko", "ar", "ru", "pt-br"],
++     True, False, 20, 2024, 3, 7, 712345),
++    ("Salts and Solubility", ["chemistry"], ["high"],
++     ["solubility", "salts", "saturation"],
++     ["es", "fr", "de"],
++     False, True, 25, 2025, 3, 4, 56789),
++
++    ("Graphing Lines", ["math"], ["middle", "high"],
++     ["linear equations", "slope", "intercept"],
++     ["es", "fr", "de", "zh-cn", "ja", "ko", "ar"],
++     True, False, 20, 2024, 1, 11, 567890),
++    ("Area Builder", ["math"], ["elementary", "middle"],
++     ["area", "perimeter", "shapes"],
++     ["es", "fr", "de", "zh-cn", "ja", "pt-br"],
++     False, False, 15, 2023, 10, 14, 234567),
++    ("Fractions: Intro", ["math"], ["elementary", "middle"],
++     ["fractions", "numerators", "denominators"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar", "pt-br", "ru"],
++     True, False, 15, 2024, 2, 19, 689012),
++    ("Function Builder", ["math"], ["middle", "high"],
++     ["functions", "input output", "composition"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 9, 21, 178901),
++    ("Plinko Probability", ["math"], ["middle", "high", "university"],
++     ["probability", "distributions", "statistics"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 8, 6, 145678),
++    ("Trig Tour", ["math"], ["high", "university"],
++     ["trigonometry", "sine", "cosine", "unit circle"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 7, 30, 123890),
++    ("Vector Addition", ["math", "physics"], ["high", "university"],
++     ["vectors", "components", "magnitude"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 6, 8, 156789),
++    ("Calculus Grapher", ["math"], ["high", "university"],
++     ["derivatives", "integrals", "calculus"],
++     ["es", "fr", "de"],
++     False, True, 30, 2025, 1, 22, 67890),
++    ("Equality Explorer", ["math"], ["elementary", "middle"],
++     ["equations", "balance", "variables"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 5, 12, 134567),
++    ("Number Line: Integers", ["math"], ["elementary", "middle"],
++     ["integers", "negative numbers", "number line"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 15, 2023, 4, 19, 98765),
++    ("Make a Ten", ["math"], ["elementary"],
++     ["addition", "place value", "counting"],
++     ["es", "fr", "zh-cn", "ja"],
++     False, False, 10, 2023, 3, 25, 78901),
++    ("Estimation", ["math"], ["elementary", "middle"],
++     ["estimation", "measurement", "comparison"],
++     ["es", "fr", "de"],
++     False, False, 15, 2023, 2, 16, 65432),
++
++    ("Natural Selection", ["biology"], ["middle", "high", "university"],
++     ["evolution", "adaptation", "selection"],
++     ["es", "fr", "de", "zh-cn", "ja", "pt-br"],
++     True, False, 30, 2024, 1, 27, 412567),
++    ("Gene Expression Essentials", ["biology"], ["high", "university"],
++     ["dna", "transcription", "translation", "proteins"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 11, 23, 234890),
++    ("Neuron", ["biology"], ["high", "university"],
++     ["neurons", "action potential", "ion channels"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 10, 5, 187654),
++    ("Membrane Channels", ["biology"], ["high", "university"],
++     ["membranes", "diffusion", "transport"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 9, 12, 145623),
++    ("Stretching DNA", ["biology", "physics"], ["high", "university"],
++     ["dna", "forces", "molecular biology"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 8, 28, 112345),
++    ("Eating and Exercise", ["biology"], ["middle", "high"],
++     ["nutrition", "metabolism", "calories"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 7, 17, 167890),
++
++    ("Plate Tectonics", ["earth-science"], ["middle", "high"],
++     ["plates", "continents", "earthquakes"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     True, False, 25, 2024, 2, 5, 389012),
++    ("Greenhouse Effect", ["earth-science", "physics"], ["middle", "high"],
++     ["climate", "atmosphere", "radiation"],
++     ["es", "fr", "de", "zh-cn", "pt-br"],
++     True, False, 25, 2024, 3, 18, 456789),
++    ("Glaciers", ["earth-science"], ["middle", "high"],
++     ["glaciers", "climate", "ice"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 11, 14, 123456),
++    ("Density", ["earth-science", "physics"], ["elementary", "middle", "high"],
++     ["density", "mass", "volume", "buoyancy"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar"],
++     True, False, 20, 2024, 1, 30, 567823),
++    ("My Solar System", ["earth-science", "physics"], ["middle", "high", "university"],
++     ["gravity", "orbits", "solar system"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar", "pt-br"],
++     True, False, 30, 2024, 4, 11, 678901),
++    ("Radioactive Dating Game", ["earth-science", "physics"], ["high"],
++     ["radioactivity", "half-life", "dating"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 6, 23, 134567),
++    ("Lunar Lander", ["earth-science", "physics"], ["middle", "high"],
++     ["gravity", "thrust", "motion"],
++     ["es", "fr", "de", "ja"],
++     False, True, 20, 2025, 2, 17, 78901),
++
++    # Additional biology sims
++    ("Mendelian Genetics", ["biology"], ["middle", "high", "university"],
++     ["genetics", "heredity", "alleles", "punnett squares"],
++     ["es", "fr", "de", "zh-cn", "ja", "pt-br"],
++     True, False, 30, 2024, 2, 22, 287654),
++    ("DNA Replication", ["biology"], ["high", "university"],
++     ["dna", "replication", "polymerase"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 12, 17, 178923),
++    ("Photosynthesis", ["biology"], ["elementary", "middle", "high"],
++     ["photosynthesis", "chlorophyll", "plants", "light"],
++     ["es", "fr", "de", "zh-cn", "ja", "ko", "pt-br"],
++     True, False, 25, 2024, 3, 9, 421890),
++    ("Predator-Prey Dynamics", ["biology"], ["middle", "high"],
++     ["ecology", "population", "food chain"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 30, 2023, 11, 26, 198765),
++    ("Cellular Respiration", ["biology", "chemistry"], ["high", "university"],
++     ["respiration", "atp", "mitochondria", "energy"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 10, 13, 156789),
++    ("Punnett Squares", ["biology"], ["middle", "high"],
++     ["genetics", "heredity", "punnett squares"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 20, 2023, 9, 8, 234156),
++    ("Population Dynamics", ["biology", "math"], ["high", "university"],
++     ["population", "exponential growth", "carrying capacity"],
++     ["es", "fr", "de"],
++     False, True, 30, 2025, 1, 8, 67890),
++    ("Cell Diffusion", ["biology"], ["middle", "high"],
++     ["diffusion", "membranes", "concentration"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 8, 19, 132465),
++    ("Enzyme Kinetics", ["biology", "chemistry"], ["high", "university"],
++     ["enzymes", "catalysis", "kinetics"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 7, 11, 98432),
++    ("Food Web Builder", ["biology"], ["elementary", "middle"],
++     ["ecology", "food web", "trophic levels"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar"],
++     False, False, 25, 2023, 6, 4, 187234),
++    ("Mitosis and Meiosis", ["biology"], ["high", "university"],
++     ["cell division", "chromosomes", "mitosis", "meiosis"],
++     ["es", "fr", "de"],
++     False, False, 30, 2023, 5, 17, 145678),
++    ("Blood Pressure Basics", ["biology"], ["middle", "high"],
++     ["circulation", "heart", "blood pressure"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 20, 2023, 4, 22, 87654),
++    ("Lac Operon Regulation", ["biology"], ["university"],
++     ["gene regulation", "operon", "molecular biology"],
++     ["es", "fr", "de"],
++     False, False, 30, 2023, 3, 12, 54321),
++    ("Bee Hive Activity", ["biology"], ["elementary", "middle"],
++     ["pollination", "bees", "ecosystems"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 15, 2023, 2, 28, 76543),
++
++    # Additional earth-science sims
++    ("Seasons", ["earth-science"], ["elementary", "middle"],
++     ["seasons", "earth tilt", "sun"],
++     ["es", "fr", "de", "zh-cn", "ja", "ar"],
++     True, False, 20, 2024, 1, 19, 312456),
++    ("Water Cycle", ["earth-science"], ["elementary", "middle", "high"],
++     ["evaporation", "condensation", "precipitation", "water cycle"],
++     ["es", "fr", "de", "zh-cn", "ja", "ko", "pt-br"],
++     True, False, 20, 2024, 2, 26, 398765),
++    ("Volcanic Eruption", ["earth-science"], ["elementary", "middle", "high"],
++     ["volcanoes", "magma", "lava", "geology"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 25, 2023, 12, 10, 234567),
++    ("Earthquake Simulator", ["earth-science"], ["middle", "high"],
++     ["earthquakes", "seismic waves", "magnitude"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 11, 18, 198432),
++    ("Tides", ["earth-science", "physics"], ["middle", "high"],
++     ["tides", "gravity", "moon", "ocean"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 10, 27, 167890),
++    ("Climate Change Model", ["earth-science"], ["high", "university"],
++     ["climate", "greenhouse gases", "temperature"],
++     ["es", "fr", "de", "zh-cn", "pt-br"],
++     True, True, 35, 2025, 2, 8, 89012),
++    ("Ozone Layer", ["earth-science", "chemistry"], ["middle", "high"],
++     ["ozone", "atmosphere", "uv radiation"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 9, 14, 123456),
++    ("Solar Wind", ["earth-science", "physics"], ["high", "university"],
++     ["solar wind", "magnetosphere", "auroras"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 8, 22, 87432),
++    ("Rock Cycle", ["earth-science"], ["elementary", "middle", "high"],
++     ["rocks", "minerals", "igneous", "sedimentary", "metamorphic"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 25, 2023, 7, 6, 156789),
++    ("Ocean Currents", ["earth-science"], ["middle", "high"],
++     ["ocean", "currents", "thermohaline"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 6, 18, 112345),
++    ("Mineral Hardness", ["earth-science"], ["elementary", "middle"],
++     ["minerals", "mohs scale", "geology"],
++     ["es", "fr", "de"],
++     False, False, 15, 2023, 5, 30, 76543),
++    ("Mountain Building", ["earth-science"], ["middle", "high"],
++     ["tectonics", "mountains", "erosion"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 4, 11, 98765),
++
++    # More elementary-friendly sims
++    ("Shapes and Patterns", ["math"], ["elementary"],
++     ["shapes", "patterns", "geometry"],
++     ["es", "fr", "de", "zh-cn", "ja", "ko"],
++     False, False, 15, 2023, 3, 18, 134567),
++    ("Counting Coins", ["math"], ["elementary"],
++     ["counting", "money", "addition"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 12, 2023, 2, 23, 87654),
++    ("Simple Machines", ["physics"], ["elementary", "middle"],
++     ["levers", "pulleys", "wheels", "force"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 20, 2023, 4, 27, 165432),
++    ("Magnet Toy", ["physics"], ["elementary"],
++     ["magnets", "attraction", "repulsion"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 12, 2023, 5, 9, 98432),
++    ("Weather Watcher", ["earth-science"], ["elementary"],
++     ["weather", "clouds", "temperature"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 15, 2023, 6, 13, 76543),
++    ("Plant Growth", ["biology"], ["elementary"],
++     ["plants", "growth", "seeds"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 15, 2023, 7, 21, 54321),
++    ("Animal Classification", ["biology"], ["elementary"],
++     ["animals", "classification", "vertebrates"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 15, 2023, 8, 9, 87654),
++
++    # More chemistry sims (to clear 20+ threshold)
++    ("Atomic Interactions", ["chemistry", "physics"], ["high", "university"],
++     ["atoms", "forces", "lennard-jones"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 3, 14, 123890),
++    ("Sugar and Salt Solutions", ["chemistry"], ["middle", "high"],
++     ["solutions", "dissolving", "concentration"],
++     ["es", "fr", "de", "zh-cn", "ja", "pt-br"],
++     False, False, 20, 2023, 11, 6, 198765),
++    ("Gas Properties", ["chemistry", "physics"], ["high", "university"],
++     ["gases", "pressure", "temperature", "kinetic theory"],
++     ["es", "fr", "de", "zh-cn"],
++     True, False, 25, 2024, 1, 25, 287654),
++    ("Diffusion in Gases", ["chemistry", "physics"], ["middle", "high"],
++     ["diffusion", "gases", "concentration"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 10, 19, 134567),
++    ("Bonding Explorer", ["chemistry"], ["high"],
++     ["bonding", "ionic", "covalent", "metallic"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 25, 2023, 9, 28, 156789),
++    ("Reaction Quizzer", ["chemistry"], ["high", "university"],
++     ["reactions", "products", "balancing"],
++     ["es", "fr", "de"],
++     False, False, 20, 2023, 8, 11, 87654),
++
++    # More math sims (to clear 20+ threshold)
++    ("Probability Experiments", ["math"], ["middle", "high"],
++     ["probability", "experiments", "statistics"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 20, 2023, 11, 21, 167890),
++    ("Coordinate Plane", ["math"], ["middle", "high"],
++     ["coordinates", "graphs", "plotting"],
++     ["es", "fr", "de", "zh-cn"],
++     False, False, 15, 2023, 9, 30, 145678),
++    ("Algebra Tiles", ["math"], ["middle", "high"],
++     ["algebra", "polynomials", "factoring"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 8, 17, 123456),
++    ("Percent Word Problems", ["math"], ["middle"],
++     ["percentages", "ratios", "word problems"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 20, 2023, 7, 9, 98432),
++    ("Geometric Constructions", ["math"], ["middle", "high"],
++     ["geometry", "compass", "straightedge"],
++     ["es", "fr", "de"],
++     False, False, 25, 2023, 6, 5, 87654),
++    ("Decimal Models", ["math"], ["elementary", "middle"],
++     ["decimals", "place value", "comparison"],
++     ["es", "fr", "de", "zh-cn", "ja"],
++     False, False, 15, 2023, 5, 14, 134567),
++]
++
++
++ACTIVITIES_SEED = [
++    ("Forces and Motion: Basics", "Net Force Investigation",
++     "Dr. Trish Loeblein", "high", 50,
++     "Students predict, observe, and explain the motion of objects with "
++     "balanced and unbalanced forces using friction and applied force."),
++    ("Build an Atom", "Atomic Structure Lab",
++     "Emily Moore", "middle", 45,
++     "Build atoms of the first 10 elements, identify subatomic particles, "
++     "and explore how protons determine the element."),
++    ("Balancing Chemical Equations", "Coefficient Practice",
++     "Yuen-Ying Carpenter", "high", 60,
++     "Practice balancing combustion, synthesis, and decomposition reactions "
++     "using the conservation of mass."),
++    ("States of Matter", "Phase Change Inquiry",
++     "Sam McKagan", "middle", 40,
++     "Investigate the relationship between temperature, kinetic energy, "
++     "and phase transitions for water, neon, oxygen, and argon."),
++    ("Natural Selection", "Evolution of Bunnies",
++     "Wendy Adams", "high", 55,
++     "Model how variation, environment, and selection pressure together "
++     "drive allele frequency change across generations."),
++    ("Gravity and Orbits", "Modeling the Solar System",
++     "Noah Finkelstein", "middle", 50,
++     "Manipulate masses and distances to explore how gravitational force "
++     "shapes planetary orbits in our solar system."),
++    ("pH Scale", "Acids and Bases in the Kitchen",
++     "Kelly Lancaster", "middle", 40,
++     "Predict, measure, and rank common household solutions by pH and "
++     "categorize each as acid, base, or neutral."),
++    ("Plate Tectonics", "Boundary Identification",
++     "Karina Hensberry", "high", 45,
++     "Use animations to classify convergent, divergent, and transform "
++     "boundaries and connect each to real-world geologic features."),
++    ("Greenhouse Effect", "Climate Modeling Lab",
++     "Trish Loeblein", "high", 60,
++     "Model how atmospheric composition affects equilibrium temperature "
++     "with and without greenhouse gases."),
++    ("Circuit Construction Kit: DC", "Series and Parallel",
++     "John De La Cruz", "high", 50,
++     "Compare current and voltage in series vs parallel arrangements "
++     "and verify Kirchhoff's laws empirically."),
++    ("Fractions: Intro", "Equivalent Fractions Game",
++     "Amanda McGarry", "elementary", 30,
++     "Use bar models, number lines, and circle models to identify "
++     "equivalent fractions and develop fluency."),
++    ("Energy Skate Park", "Conservation of Energy",
++     "Karina Hensberry", "high", 55,
++     "Track potential, kinetic, thermal, and total energy as a skater "
++     "moves through changing terrain."),
++    ("Density", "Identify the Mystery Block",
++     "Emily Moore", "middle", 35,
++     "Use mass and volume measurements to identify the material of "
++     "unknown solid blocks and explain buoyancy in water."),
++    ("Graphing Lines", "Slope-Intercept Form",
++     "Dr. Karina Hensberry", "middle", 40,
++     "Investigate how m and b transform the line y = mx + b and apply "
++     "this to real-world rate problems."),
++]
++
++
++BENCHMARK_USERS = [
++    ("teacher@phet.test", "Ada Lovelace", "phet-teacher-pass",
++     "teacher", "Cherry Creek High School", "United States"),
++    ("student@phet.test", "Carl Sagan", "phet-student-pass",
++     "student", "Ithaca High School", "United States"),
++    ("research@phet.test", "Marie Curie", "phet-research-pass",
++     "researcher", "Sorbonne University", "France"),
++    ("demo@phet.test", "Demo User", "phet-demo-pass",
++     "teacher", "Demo School", "Canada"),
++]
++
++
++def seed_subjects():
++    if Subject.query.count() > 0:
++        return
++    for slug, name, icon, color, desc in SUBJECTS_SEED:
++        db.session.add(Subject(
++            slug=slug, name=name, icon=icon, color=color, description=desc,
++        ))
++    db.session.commit()
++
++
++def seed_grades():
++    if GradeLevel.query.count() > 0:
++        return
++    for slug, name, age_range, sort_order in GRADES_SEED:
++        db.session.add(GradeLevel(
++            slug=slug, name=name, age_range=age_range, sort_order=sort_order,
++        ))
++    db.session.commit()
++
++
++def seed_languages():
++    if Language.query.count() > 0:
++        return
++    for code, name, native, rtl in LANGUAGES_SEED:
++        db.session.add(Language(
++            code=code, name=name, native_name=native, is_rtl=rtl, sim_count=0,
++        ))
++    db.session.commit()
++
++
++def seed_simulations():
++    if Simulation.query.count() > 0:
++        return
++    for row in SIMULATIONS_SEED:
++        (title, subjects, grades, topics, extra_langs,
++         featured, is_new, runtime, year, month, day, plays) = row
++        slug = _slug(title)
++        languages = ["en"] + list(extra_langs)
++        sim = Simulation(
++            slug=slug,
++            title=title,
++            short_description=_make_short_desc(title, topics),
++            overview=_make_overview(title, topics, subjects),
++            subjects_json=json.dumps(subjects),
++            grades_json=json.dumps(grades),
++            topics_json=json.dumps(topics),
++            languages_json=json.dumps(languages),
++            is_html5=True,
++            is_featured=featured,
++            is_new=is_new,
++            thumbnail=f"{slug}.svg",
++            runtime_minutes=runtime,
++            release_date=date(year, month, day),
++            play_count=plays,
++            download_count=max(plays // 8, 1000),
++        )
++        db.session.add(sim)
++    db.session.commit()
++
++    # update per-language sim counts
++    lang_counts = {l.code: 0 for l in Language.query.all()}
++    for sim in Simulation.query.all():
++        for code in sim.languages():
++            if code in lang_counts:
++                lang_counts[code] += 1
++    for code, count in lang_counts.items():
++        lang = Language.query.filter_by(code=code).first()
++        if lang:
++            lang.sim_count = count
++    db.session.commit()
++
++
++def seed_activities():
++    if Activity.query.count() > 0:
++        return
++    for sim_title, title, author, grade, duration, desc in ACTIVITIES_SEED:
++        sim = Simulation.query.filter_by(slug=_slug(sim_title)).first()
++        if not sim:
++            continue
++        db.session.add(Activity(
++            sim_id=sim.id,
++            title=title,
++            author=author,
++            grade_level=grade,
++            duration_min=duration,
++            description=desc,
++            file_type="PDF",
++            download_count=max(duration * 137 % 9000, 350),
++            published_date=date(2024, ((duration % 12) + 1), 15),
++        ))
++    db.session.commit()
++
++
++def seed_benchmark_users():
++    if User.query.count() > 0:
++        return
++    for email, name, password, role, institution, country in BENCHMARK_USERS:
++        db.session.add(User(
++            email=email,
++            name=name,
++            password_hash=bcrypt.generate_password_hash(password).decode(),
++            role=role,
++            institution=institution,
++            country=country,
++        ))
++    db.session.commit()
++
++    # Pre-populate saved sims for the demo teacher so the account page is
++    # non-empty when an agent inspects it after login.
++    teacher = User.query.filter_by(email="teacher@phet.test").first()
++    if teacher:
++        for slug in ("forces-and-motion-basics", "build-an-atom",
++                     "ph-scale", "natural-selection"):
++            sim = Simulation.query.filter_by(slug=slug).first()
++            if sim:
++                db.session.add(SavedSimulation(
++                    user_id=teacher.id, sim_id=sim.id,
++                    notes=f"Use for {sim.title} unit opener.",
++                ))
++        db.session.commit()
++
++
++def _make_short_desc(title, topics):
++    if not topics:
++        return f"Interactive simulation: {title}."
++    topic_str = ", ".join(topics[:3])
++    return f"Explore {topic_str} with the interactive {title} simulation."
++
++
++def _make_overview(title, topics, subjects):
++    subject_names = ", ".join(s.replace("-", " ").title() for s in subjects)
++    topic_list = ", ".join(topics) if topics else "core concepts"
++    return (
++        f"{title} is an interactive HTML5 simulation in the PhET "
++        f"{subject_names} collection. Learners investigate {topic_list} "
++        f"by directly manipulating model parameters and observing "
++        f"real-time visual feedback. The simulation supports inquiry-"
++        f"based instruction, formative assessment, and at-home practice, "
++        f"and is freely available under a Creative Commons license."
++    )
++
++
++def seed_all():
++    seed_subjects()
++    seed_grades()
++    seed_languages()
++    seed_simulations()
++    seed_activities()
++    seed_benchmark_users()
++
++
++with app.app_context():
++    db.create_all()
++    seed_all()
++
++
++if __name__ == "__main__":
++    port = int(os.environ.get("PORT", 40015))
++    app.run(host="0.0.0.0", port=port, debug=False)
+diff --git a/sites/phet_simulations/static/css/style.css b/sites/phet_simulations/static/css/style.css
+new file mode 100644
+index 0000000..b55935f
+--- /dev/null
++++ b/sites/phet_simulations/static/css/style.css
+@@ -0,0 +1,433 @@
++:root {
++  --c-bg: #ffffff;
++  --c-bg-alt: #f4f6f8;
++  --c-border: #d8dde3;
++  --c-text: #1f2933;
++  --c-muted: #5b6470;
++  --c-primary: #0079bf;
++  --c-primary-dark: #005a8c;
++  --c-accent: #f5862e;
++  --c-success: #2e7d32;
++  --c-error: #c0392b;
++  --c-green: #6cba5c;
++  --radius: 6px;
++  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
++  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.12);
++  --max-width: 1180px;
++}
++
++* { box-sizing: border-box; }
++html, body { margin: 0; padding: 0; }
++body {
++  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
++               "Helvetica Neue", Arial, sans-serif;
++  color: var(--c-text);
++  background: var(--c-bg);
++  line-height: 1.5;
++}
++a { color: var(--c-primary); text-decoration: none; }
++a:hover { text-decoration: underline; }
++.container { max-width: var(--max-width); margin: 0 auto; padding: 0 1.25rem; }
++
++/* Topbar */
++.topbar {
++  background: var(--c-primary-dark);
++  color: #fff;
++  padding: 0.75rem 0;
++  border-bottom: 3px solid var(--c-accent);
++}
++.topbar-inner {
++  display: flex;
++  align-items: center;
++  gap: 1.25rem;
++  flex-wrap: wrap;
++}
++.brand { display: flex; align-items: center; gap: 0.5rem; color: #fff; text-decoration: none; }
++.brand-mark {
++  background: var(--c-accent);
++  color: #fff;
++  padding: 0.25rem 0.5rem;
++  border-radius: var(--radius);
++  font-weight: 700;
++  letter-spacing: 0.05em;
++}
++.brand-text { font-weight: 600; font-size: 1.05rem; }
++.primary-nav { display: flex; gap: 1rem; flex: 1 1 auto; }
++.primary-nav a { color: #fff; font-size: 0.95rem; }
++.primary-nav a:hover { text-decoration: underline; }
++
++.search-form { display: flex; gap: 0.25rem; }
++.search-form input[type=search] {
++  padding: 0.4rem 0.6rem;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  min-width: 200px;
++}
++.search-form button {
++  background: var(--c-accent);
++  color: #fff;
++  border: 0;
++  padding: 0.4rem 0.8rem;
++  border-radius: var(--radius);
++  cursor: pointer;
++}
++
++.user-menu { display: flex; gap: 0.5rem; align-items: center; }
++.user-link { color: #fff; font-size: 0.9rem; }
++.user-link.muted { opacity: 0.7; }
++.btn-mini {
++  background: var(--c-accent);
++  padding: 0.25rem 0.6rem;
++  border-radius: var(--radius);
++}
++
++/* Flashes */
++.flashes { margin-top: 1rem; }
++.flash {
++  padding: 0.75rem 1rem;
++  margin-bottom: 0.5rem;
++  border-radius: var(--radius);
++  border: 1px solid;
++}
++.flash-success { background: #e8f5e9; border-color: var(--c-success); color: var(--c-success); }
++.flash-error { background: #fdecea; border-color: var(--c-error); color: var(--c-error); }
++
++/* Layout */
++.main { padding: 2rem 0 3rem; min-height: 60vh; }
++.page-title { margin: 0 0 0.5rem; font-size: 1.75rem; }
++.page-subtitle { color: var(--c-muted); margin: 0 0 1.5rem; }
++.row { margin: 2rem 0; }
++.row-title { font-size: 1.3rem; margin: 0 0 1rem; border-bottom: 2px solid var(--c-bg-alt); padding-bottom: 0.35rem; }
++.empty-state { background: var(--c-bg-alt); padding: 1rem 1.25rem; border-radius: var(--radius); color: var(--c-muted); }
++.breadcrumb { color: var(--c-muted); font-size: 0.9rem; margin-bottom: 0.5rem; }
++.breadcrumb a { color: var(--c-primary); }
++
++.btn {
++  display: inline-block;
++  padding: 0.5rem 1rem;
++  border-radius: var(--radius);
++  font-weight: 600;
++  cursor: pointer;
++  border: 1px solid transparent;
++  text-decoration: none;
++  font-size: 0.95rem;
++}
++.btn-primary { background: var(--c-primary); color: #fff; }
++.btn-primary:hover { background: var(--c-primary-dark); text-decoration: none; }
++.btn-ghost { background: #fff; color: var(--c-primary); border-color: var(--c-primary); }
++.btn-block { display: block; width: 100%; text-align: center; }
++
++/* Hero */
++.hero {
++  background: linear-gradient(135deg, #e8f1f8 0%, #d9e9f3 100%);
++  padding: 2.5rem 2rem;
++  border-radius: var(--radius);
++  margin-bottom: 2rem;
++}
++.hero h1 { margin: 0 0 0.75rem; font-size: 2rem; }
++.hero p { margin: 0 0 1rem; max-width: 720px; }
++.hero-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
++
++/* Subject tiles */
++.subjects-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
++  gap: 1rem;
++  margin: 1.5rem 0 2.5rem;
++}
++.subject-tile {
++  display: flex;
++  flex-direction: column;
++  padding: 1.25rem;
++  border-radius: var(--radius);
++  border: 1px solid var(--c-border);
++  border-top: 4px solid var(--tile-color, var(--c-primary));
++  background: #fff;
++  color: var(--c-text);
++  transition: transform 0.15s, box-shadow 0.15s;
++}
++.subject-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); text-decoration: none; }
++.subject-icon {
++  width: 40px; height: 40px;
++  border-radius: 50%;
++  background: var(--tile-color, var(--c-primary));
++  color: #fff;
++  font-weight: 700;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  margin-bottom: 0.6rem;
++}
++.subject-name { font-weight: 700; font-size: 1.05rem; }
++.subject-desc { color: var(--c-muted); font-size: 0.88rem; margin-top: 0.25rem; }
++
++/* Sim card */
++.sim-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
++  gap: 1.25rem;
++}
++.sim-grid-small {
++  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
++  gap: 1rem;
++}
++.sim-card {
++  background: #fff;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  overflow: hidden;
++  display: flex;
++  flex-direction: column;
++  position: relative;
++  transition: box-shadow 0.15s, transform 0.15s;
++}
++.sim-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); }
++.sim-thumb {
++  background: linear-gradient(135deg, #0079bf 0%, #6cba5c 100%);
++  aspect-ratio: 16 / 10;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  color: #fff;
++  font-weight: 700;
++  text-align: center;
++  padding: 0.5rem;
++  text-decoration: none;
++}
++.sim-thumb-label { font-size: 0.95rem; line-height: 1.2; }
++.sim-meta { padding: 0.75rem 0.9rem 1rem; flex: 1; display: flex; flex-direction: column; }
++.sim-title { margin: 0 0 0.25rem; font-size: 1rem; }
++.sim-title a { color: var(--c-text); }
++.sim-title a:hover { color: var(--c-primary); text-decoration: underline; }
++.sim-desc { color: var(--c-muted); font-size: 0.85rem; margin: 0 0 0.5rem; flex: 1; }
++.sim-tags { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.25rem; }
++.sim-tag { font-size: 0.72rem; background: var(--c-bg-alt); color: var(--c-muted); padding: 0.15rem 0.4rem; border-radius: 3px; }
++.badge { display: inline-block; font-size: 0.7rem; padding: 0.15rem 0.45rem; border-radius: 3px; margin-right: 0.25rem; }
++.badge-new { background: var(--c-accent); color: #fff; }
++.badge-featured { background: var(--c-green); color: #fff; }
++.badge-html5 { background: var(--c-primary); color: #fff; }
++.badge-version { background: var(--c-bg-alt); color: var(--c-muted); }
++
++/* Filter bar */
++.filter-bar {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.75rem;
++  align-items: flex-end;
++  background: var(--c-bg-alt);
++  padding: 0.85rem 1rem;
++  border-radius: var(--radius);
++  margin-bottom: 1.25rem;
++}
++.filter-bar label {
++  display: flex;
++  flex-direction: column;
++  font-size: 0.8rem;
++  color: var(--c-muted);
++  gap: 0.2rem;
++}
++.filter-bar select {
++  padding: 0.4rem 0.6rem;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  background: #fff;
++  min-width: 160px;
++}
++.search-form-wide {
++  display: flex;
++  gap: 0.5rem;
++  margin: 1rem 0 2rem;
++}
++.search-form-wide input { flex: 1; padding: 0.6rem 0.8rem; border: 1px solid var(--c-border); border-radius: var(--radius); }
++
++/* Pager */
++.pager { display: flex; gap: 1rem; align-items: center; justify-content: center; margin: 2rem 0; }
++.pager-status { color: var(--c-muted); font-size: 0.9rem; }
++
++/* Sim detail */
++.sim-detail-head { margin-bottom: 1.5rem; }
++.sim-detail-head h1 { margin: 0 0 0.5rem; font-size: 2rem; }
++.sim-detail-tagline { color: var(--c-muted); font-size: 1.05rem; margin: 0 0 0.75rem; }
++.badge-row { list-style: none; padding: 0; margin: 0; display: flex; gap: 0.25rem; flex-wrap: wrap; }
++.sim-detail-body { display: grid; grid-template-columns: 2.4fr 1fr; gap: 2rem; }
++@media (max-width: 800px) { .sim-detail-body { grid-template-columns: 1fr; } }
++.sim-detail-frame {
++  background: linear-gradient(135deg, #0079bf 0%, #6cba5c 100%);
++  aspect-ratio: 16 / 10;
++  border-radius: var(--radius);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  flex-direction: column;
++  gap: 1rem;
++  color: #fff;
++  margin-bottom: 1.5rem;
++}
++.sim-detail-frame-label { font-size: 1.4rem; font-weight: 700; }
++.sim-detail-section { margin: 1.5rem 0; }
++.sim-detail-section h2 { font-size: 1.2rem; margin: 0 0 0.5rem; }
++.topic-list, .activity-list { padding-left: 1.5rem; }
++.activity-list li { margin-bottom: 0.5rem; }
++.activity-meta { color: var(--c-muted); font-size: 0.85rem; }
++.side-card {
++  background: var(--c-bg-alt);
++  border-radius: var(--radius);
++  padding: 1rem 1.2rem;
++  margin-bottom: 1rem;
++}
++.side-card h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
++.side-card ul { margin: 0; padding: 0; list-style: none; }
++.side-card li { padding: 0.2rem 0; font-size: 0.9rem; border-bottom: 1px solid #e1e6eb; }
++.side-card li:last-child { border: 0; }
++.lang-list { max-height: 220px; overflow-y: auto; }
++.save-status { color: var(--c-success); font-size: 0.85rem; margin: 0.5rem 0 0; }
++
++/* Languages */
++.language-grid {
++  list-style: none;
++  padding: 0;
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
++  gap: 0.75rem;
++}
++.language-card {
++  background: #fff;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++}
++.language-card a {
++  display: flex;
++  flex-direction: column;
++  padding: 1rem 1.2rem;
++  color: var(--c-text);
++  text-decoration: none;
++}
++.language-card.rtl a { direction: rtl; text-align: right; }
++.language-name { font-weight: 700; font-size: 1rem; }
++.language-native { color: var(--c-muted); font-size: 0.88rem; }
++.language-count { font-size: 0.8rem; color: var(--c-primary); margin-top: 0.25rem; }
++
++/* Teachers */
++.teachers-hero {
++  background: linear-gradient(135deg, #fff4e6 0%, #ffe5cc 100%);
++  padding: 2rem;
++  border-radius: var(--radius);
++  margin-bottom: 2rem;
++}
++.teachers-hero h1 { margin: 0 0 0.5rem; }
++.activity-grid {
++  list-style: none;
++  padding: 0;
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
++  gap: 1rem;
++}
++.activity-card {
++  background: #fff;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  padding: 1.1rem 1.2rem;
++}
++.activity-card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
++.activity-author { color: var(--c-muted); font-size: 0.82rem; margin-top: 0.5rem; }
++.activity-detail .activity-section { margin: 1.5rem 0; }
++.activity-detail h1 { margin: 0 0 0.5rem; }
++
++/* Category */
++.category-header {
++  background: var(--c-bg-alt);
++  border-left: 5px solid var(--tile-color, var(--c-primary));
++  padding: 1.5rem;
++  border-radius: var(--radius);
++  margin-bottom: 1.5rem;
++}
++.category-header h1 { margin: 0 0 0.25rem; }
++.category-count { color: var(--c-muted); margin: 0.5rem 0 0; }
++
++/* About */
++.prose { max-width: 720px; }
++.prose h2 { margin-top: 2rem; }
++.stats-grid {
++  list-style: none;
++  padding: 0;
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
++  gap: 1rem;
++  margin: 1.5rem 0;
++}
++.stat-card {
++  background: var(--c-bg-alt);
++  padding: 1.2rem;
++  border-radius: var(--radius);
++  text-align: center;
++}
++.stat-card strong { display: block; font-size: 1.8rem; color: var(--c-primary); }
++.stat-card span { color: var(--c-muted); font-size: 0.85rem; }
++
++/* Account */
++.saved-list { list-style: none; padding: 0; }
++.saved-item {
++  background: #fff;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  padding: 1rem 1.25rem;
++  margin-bottom: 0.75rem;
++}
++.saved-item h3 { margin: 0 0 0.25rem; font-size: 1.05rem; }
++.saved-desc { color: var(--c-muted); margin: 0 0 0.5rem; font-size: 0.9rem; }
++.saved-notes { background: #fff8e1; padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.88rem; }
++.saved-meta { color: var(--c-muted); font-size: 0.8rem; margin: 0.4rem 0 0; }
++
++/* Auth */
++.auth-card {
++  max-width: 420px;
++  margin: 2rem auto;
++  background: #fff;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  padding: 2rem;
++  box-shadow: var(--shadow);
++}
++.auth-card h1 { margin: 0 0 0.5rem; font-size: 1.5rem; }
++.auth-sub { color: var(--c-muted); margin: 0 0 1.5rem; font-size: 0.9rem; }
++.auth-card label { display: block; margin-bottom: 0.85rem; font-size: 0.88rem; color: var(--c-muted); }
++.auth-card input {
++  display: block;
++  width: 100%;
++  margin-top: 0.2rem;
++  padding: 0.55rem 0.7rem;
++  border: 1px solid var(--c-border);
++  border-radius: var(--radius);
++  font-size: 0.95rem;
++}
++.auth-foot { color: var(--c-muted); font-size: 0.88rem; margin-top: 1rem; text-align: center; }
++
++/* Error */
++.error-page { text-align: center; padding: 3rem 1rem; }
++.error-page ul { list-style: none; padding: 0; }
++.error-page li { display: inline-block; margin: 0 0.5rem; }
++
++/* Footer */
++.footer {
++  background: #1f2933;
++  color: #d4d8de;
++  padding: 2.5rem 0 1.5rem;
++  margin-top: 3rem;
++}
++.footer-inner {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
++  gap: 1.5rem;
++}
++.footer h4 { color: #fff; margin: 0 0 0.6rem; font-size: 0.95rem; }
++.footer ul { list-style: none; padding: 0; margin: 0; }
++.footer li { margin-bottom: 0.3rem; }
++.footer a { color: #d4d8de; font-size: 0.88rem; }
++.footer a:hover { color: #fff; }
++.footer-fineprint {
++  border-top: 1px solid #2d3742;
++  padding-top: 1rem;
++  margin-top: 1.5rem;
++  color: #8c95a1;
++  font-size: 0.82rem;
++}
+diff --git a/sites/phet_simulations/static/js/main.js b/sites/phet_simulations/static/js/main.js
+new file mode 100644
+index 0000000..17df6a4
+--- /dev/null
++++ b/sites/phet_simulations/static/js/main.js
+@@ -0,0 +1,59 @@
++(function () {
++  function getCsrfToken(form) {
++    var input = form.querySelector('input[name="csrf_token"]');
++    return input ? input.value : '';
++  }
++
++  document.querySelectorAll('.save-form').forEach(function (form) {
++    var status = form.querySelector('.save-status');
++    form.querySelectorAll('button[data-action]').forEach(function (btn) {
++      btn.addEventListener('click', function () {
++        var action = btn.getAttribute('data-action');
++        var simId = form.getAttribute('data-sim-id');
++        var endpoint = action === 'save' ? '/api/save-sim' : '/api/unsave-sim';
++
++        fetch(endpoint, {
++          method: 'POST',
++          headers: {
++            'Content-Type': 'application/json',
++            'X-CSRFToken': getCsrfToken(form),
++          },
++          body: JSON.stringify({ sim_id: simId }),
++        })
++          .then(function (r) { return r.json(); })
++          .then(function (data) {
++            if (!data.ok) {
++              status.textContent = 'Error: ' + (data.error || 'unknown');
++              status.style.color = '#c0392b';
++              return;
++            }
++            if (action === 'save') {
++              btn.textContent = 'Remove from saved';
++              btn.setAttribute('data-action', 'unsave');
++              btn.classList.remove('btn-primary');
++              btn.classList.add('btn-ghost');
++              status.textContent = 'Saved to your account.';
++            } else {
++              btn.textContent = 'Save to my account';
++              btn.setAttribute('data-action', 'save');
++              btn.classList.remove('btn-ghost');
++              btn.classList.add('btn-primary');
++              status.textContent = 'Removed from saved.';
++            }
++            status.style.color = '#2e7d32';
++          })
++          .catch(function () {
++            status.textContent = 'Network error, please retry.';
++            status.style.color = '#c0392b';
++          });
++      });
++    });
++  });
++
++  var playBtn = document.querySelector('.sim-detail-play');
++  if (playBtn) {
++    playBtn.addEventListener('click', function () {
++      alert('Mirror snapshot — simulation playback is disabled in benchmark mode.');
++    });
++  }
++})();
+diff --git a/sites/phet_simulations/tasks.jsonl b/sites/phet_simulations/tasks.jsonl
+new file mode 100644
+index 0000000..b60e8ed
+--- /dev/null
++++ b/sites/phet_simulations/tasks.jsonl
+@@ -0,0 +1,43 @@
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--0", "ques": "Find an interactive simulation about Newton's laws and forces that is suitable for elementary school students.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--1", "ques": "Search for a chemistry simulation that helps students learn how to balance chemical equations, and report which grade levels it targets.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--2", "ques": "Browse the Physics category on PhET and list three simulations that cover electromagnetism.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--3", "ques": "Find the 'Gravity and Orbits' simulation and report what subjects it is tagged with, what grade levels it targets, and when it was released.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--4", "ques": "Find a featured biology simulation about evolution and report its short description and target grade levels.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--5", "ques": "Search the PhET catalog for simulations matching 'DNA' and report how many results are returned.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--6", "ques": "Find a math simulation suitable for middle school students that covers probability, and report its play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--7", "ques": "Open the Translations page on PhET, find Chinese (Simplified), and report how many simulations are available in that language.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--8", "ques": "Find all simulations available in Arabic on PhET, and report whether any of them are tagged as 'New'.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--9", "ques": "List three languages PhET simulations are translated into that use a right-to-left script.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--10", "ques": "Filter the simulations catalog to show only Chemistry simulations for high school, sorted by most-played, and report the top result.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--11", "ques": "Find a teacher-submitted activity for the 'Build an Atom' simulation and report its author, grade level, and duration.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--12", "ques": "Browse the For Teachers section, find the most-downloaded activity, and report which simulation it is paired with.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--13", "ques": "Find an earth-science simulation that covers plate tectonics, and list the related simulations recommended on its detail page.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--14", "ques": "On the PhET About page, report the total number of simulations, subject areas, languages, and teacher activities listed.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--15", "ques": "Create a new teacher account on PhET with the email 'test_user@phet.test', then save the 'Energy Skate Park' simulation to your account.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--16", "ques": "Sign in to PhET as teacher@phet.test (password phet-teacher-pass) and report how many simulations are saved to that account.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--17", "ques": "Find a simulation about pH and acids/bases, and identify three subjects or topics it covers.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--18", "ques": "On the PhET catalog, find a simulation about photosynthesis and report which grade levels it targets and how long it takes to run.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--19", "ques": "Browse the Math category on PhET and find a simulation focused on graphing linear equations. Report its release date.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--20", "ques": "Find a chemistry simulation that helps students explore solutions and concentration, and list three related simulations.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--21", "ques": "Filter the catalog to show only simulations tagged 'New', and report how many are released in 2025.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--22", "ques": "Find the 'Circuit Construction Kit: DC' simulation and report the full list of languages it is available in.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--23", "ques": "Browse the biology category and report which simulations are appropriate for university-level students.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--24", "ques": "Look up an elementary-school physics simulation about magnets, and report its short description.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--25", "ques": "On the PhET For Teachers page, find a high-school activity longer than 50 minutes and report its title and author.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--26", "ques": "Find a simulation about the greenhouse effect or climate, and report its full overview paragraph.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--27", "ques": "Search for 'genetics' simulations on PhET and report which subjects are covered.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--28", "ques": "Find a simulation about waves and interference, and report what version it is currently at.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--29", "ques": "On the PhET catalog, sort simulations by newest first and list the five most recently released.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--30", "ques": "Filter the catalog to show only elementary-school simulations and report how many are available.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--31", "ques": "Find a biology simulation related to predator-prey or population dynamics and report its play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--32", "ques": "Browse the PhET catalog and identify a simulation that is tagged as both 'Physics' and 'Math'.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--33", "ques": "Open the Translations page, find Japanese, and click through to view all simulations available in Japanese.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--34", "ques": "Find the 'Natural Selection' simulation and report its target grade levels and three topics it covers.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--35", "ques": "Search for simulations about 'orbit' and report two that come up.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--36", "ques": "Find a teacher activity focused on equivalent fractions and report its target grade level and duration.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--37", "ques": "On the PhET catalog filter activities for high-school level only, and report how many are available.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--38", "ques": "Find a chemistry simulation about isotopes and report what grade levels and languages it supports.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--39", "ques": "Visit the Accessibility page on PhET and report what types of input methods are supported by the simulations.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--40", "ques": "Sign in as student@phet.test (password phet-student-pass), navigate to the 'Build an Atom' simulation, and save it to your account with a note.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--41", "ques": "Find the most-played simulation on the PhET homepage and report its title, subjects, and play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--42", "ques": "On the PhET catalog, find a simulation about the water cycle and report its target grade levels and short description.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+diff --git a/sites/phet_simulations/templates/404.html b/sites/phet_simulations/templates/404.html
+new file mode 100644
+index 0000000..ac5e171
+--- /dev/null
++++ b/sites/phet_simulations/templates/404.html
+@@ -0,0 +1,14 @@
++{% extends "base.html" %}
++{% block title %}Page not found &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<div class="error-page">
++  <h1>Page not found</h1>
++  <p>The page you requested couldn't be found. Try one of these instead:</p>
++  <ul>
++    <li><a href="{{ url_for('index') }}">Home</a></li>
++    <li><a href="{{ url_for('simulations') }}">All simulations</a></li>
++    <li><a href="{{ url_for('teachers') }}">For teachers</a></li>
++    <li><a href="{{ url_for('search') }}">Search</a></li>
++  </ul>
++</div>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/_sim_card.html b/sites/phet_simulations/templates/_sim_card.html
+new file mode 100644
+index 0000000..6e061aa
+--- /dev/null
++++ b/sites/phet_simulations/templates/_sim_card.html
+@@ -0,0 +1,18 @@
++<article class="sim-card">
++  <a class="sim-thumb" href="{{ url_for('simulation_detail', slug=sim.slug) }}">
++    <span class="sim-thumb-label">{{ sim.title }}</span>
++  </a>
++  <div class="sim-meta">
++    <h3 class="sim-title">
++      <a href="{{ url_for('simulation_detail', slug=sim.slug) }}">{{ sim.title }}</a>
++    </h3>
++    <p class="sim-desc">{{ sim.short_description }}</p>
++    <ul class="sim-tags">
++      {% for subj_slug in sim.subjects() %}
++        <li class="sim-tag">{{ subj_slug.replace('-', ' ').title() }}</li>
++      {% endfor %}
++    </ul>
++    {% if sim.is_new %}<span class="badge badge-new">New</span>{% endif %}
++    {% if sim.is_featured %}<span class="badge badge-featured">Featured</span>{% endif %}
++  </div>
++</article>
+diff --git a/sites/phet_simulations/templates/about.html b/sites/phet_simulations/templates/about.html
+new file mode 100644
+index 0000000..55f1843
+--- /dev/null
++++ b/sites/phet_simulations/templates/about.html
+@@ -0,0 +1,38 @@
++{% extends "base.html" %}
++{% block title %}About &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<h1 class="page-title">About PhET</h1>
++
++<section class="prose">
++  <p>Founded in 2002 by Nobel laureate Carl Wieman, the PhET Interactive
++     Simulations project at the University of Colorado Boulder creates
++     free interactive math and science simulations. PhET simulations are
++     based on extensive education research and engage students through an
++     intuitive, game-like environment where they learn through exploration
++     and discovery.</p>
++
++  <h2>By the numbers</h2>
++  <ul class="stats-grid">
++    <li class="stat-card"><strong>{{ stats.simulations }}</strong><span>simulations</span></li>
++    <li class="stat-card"><strong>{{ stats.subjects }}</strong><span>subject areas</span></li>
++    <li class="stat-card"><strong>{{ stats.languages }}</strong><span>languages</span></li>
++    <li class="stat-card"><strong>{{ stats.activities }}</strong><span>teacher activities</span></li>
++  </ul>
++
++  <h2>Mission</h2>
++  <p>To advance science and math literacy and education worldwide through
++     free interactive simulations.</p>
++
++  <h2>License</h2>
++  <p>PhET simulations are freely available under a Creative Commons
++     Attribution license (CC-BY). The HTML5 simulations are downloadable
++     for offline use, embeddable into other course materials, and
++     translatable into any language.</p>
++
++  <h2>About this snapshot</h2>
++  <p>This deployment is a static mirror of the PhET catalog created for
++     the WebHarbor benchmark. Simulation play buttons are disabled in
++     this snapshot; visit the live site at phet.colorado.edu to launch
++     simulations.</p>
++</section>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/accessibility.html b/sites/phet_simulations/templates/accessibility.html
+new file mode 100644
+index 0000000..b4327b3
+--- /dev/null
++++ b/sites/phet_simulations/templates/accessibility.html
+@@ -0,0 +1,38 @@
++{% extends "base.html" %}
++{% block title %}Accessibility &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<h1 class="page-title">Accessibility</h1>
++
++<section class="prose">
++  <p>PhET is committed to making its simulations accessible to as many
++     learners as possible. Accessibility features include:</p>
++
++  <h2>Keyboard navigation</h2>
++  <p>All HTML5 simulations support full keyboard navigation, including
++     tab order, arrow-key adjustments, and shortcut keys for common
++     interactions. Tab focus is visually indicated with a high-contrast outline.</p>
++
++  <h2>Screen reader support</h2>
++  <p>Simulations include semantic markup, ARIA labels, and self-voicing
++     descriptions that announce state changes and user actions for users
++     of screen readers such as NVDA, JAWS, and VoiceOver.</p>
++
++  <h2>Visual customization</h2>
++  <p>Users can adjust contrast and color settings via browser-level
++     preferences. Simulations respect the operating system's reduced-motion
++     setting and avoid flashing content above the WCAG 2.1 threshold.</p>
++
++  <h2>Sound and captions</h2>
++  <p>Where audio is used, simulations provide optional captions and the
++     ability to mute sound entirely without losing instructional content.</p>
++
++  <h2>Translations</h2>
++  <p>Visit the <a href="{{ url_for('translations') }}">Translations page</a>
++     to find simulations in over twenty-five languages including
++     right-to-left scripts.</p>
++
++  <h2>Feedback</h2>
++  <p>To report an accessibility issue or suggest improvements, contact
++     the PhET team at phethelp@colorado.edu.</p>
++</section>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/account.html b/sites/phet_simulations/templates/account.html
+new file mode 100644
+index 0000000..f308cd2
+--- /dev/null
++++ b/sites/phet_simulations/templates/account.html
+@@ -0,0 +1,36 @@
++{% extends "base.html" %}
++{% block title %}My Account &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<h1 class="page-title">Welcome, {{ current_user.name }}</h1>
++<p class="page-subtitle">
++  {{ current_user.email }}
++  {% if current_user.institution %} &middot; {{ current_user.institution }}{% endif %}
++  {% if current_user.country %} &middot; {{ current_user.country }}{% endif %}
++  &middot; Role: {{ current_user.role|capitalize }}
++</p>
++
++<section class="row">
++  <h2 class="row-title">Saved simulations ({{ saved_rows|length }})</h2>
++  {% if saved_rows %}
++    <ul class="saved-list">
++      {% for row in saved_rows %}
++        <li class="saved-item">
++          <h3>
++            <a href="{{ url_for('simulation_detail', slug=row.simulation.slug) }}">{{ row.simulation.title }}</a>
++          </h3>
++          <p class="saved-desc">{{ row.simulation.short_description }}</p>
++          {% if row.notes %}
++            <p class="saved-notes"><strong>My notes:</strong> {{ row.notes }}</p>
++          {% endif %}
++          <p class="saved-meta">Saved {{ row.saved_at.strftime('%B %d, %Y') }}</p>
++        </li>
++      {% endfor %}
++    </ul>
++  {% else %}
++    <p class="empty-state">
++      You haven't saved any simulations yet.
++      <a href="{{ url_for('simulations') }}">Browse simulations &raquo;</a>
++    </p>
++  {% endif %}
++</section>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/activities.html b/sites/phet_simulations/templates/activities.html
+new file mode 100644
+index 0000000..500c692
+--- /dev/null
++++ b/sites/phet_simulations/templates/activities.html
+@@ -0,0 +1,45 @@
++{% extends "base.html" %}
++{% block title %}Activities &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<nav class="breadcrumb" aria-label="Breadcrumb">
++  <a href="{{ url_for('index') }}">Home</a> /
++  <a href="{{ url_for('teachers') }}">For Teachers</a> /
++  <span>Activities</span>
++</nav>
++
++<h1 class="page-title">Teacher-submitted activities</h1>
++<p class="page-subtitle">{{ activities|length }} activities published.</p>
++
++<form class="filter-bar" method="get" action="{{ url_for('activities') }}">
++  <label>
++    Grade level
++    <select name="grade">
++      <option value="">All grade levels</option>
++      {% for g in grade_levels %}
++        <option value="{{ g.slug }}" {% if g.slug == grade %}selected{% endif %}>{{ g.name }}</option>
++      {% endfor %}
++    </select>
++  </label>
++  <button type="submit" class="btn btn-primary">Filter</button>
++  <a class="btn btn-ghost" href="{{ url_for('activities') }}">Reset</a>
++</form>
++
++{% if activities %}
++  <ul class="activity-grid">
++    {% for activity in activities %}
++      <li class="activity-card">
++        <h3><a href="{{ url_for('activity_detail', activity_id=activity.id) }}">{{ activity.title }}</a></h3>
++        <p class="activity-meta">
++          For <strong>{{ activity.simulation.title }}</strong> &middot;
++          {{ activity.grade_level|capitalize }} &middot;
++          {{ activity.duration_min }} min
++        </p>
++        <p>{{ activity.description }}</p>
++        <p class="activity-author">By {{ activity.author }} &middot; {{ activity.download_count }} downloads &middot; {{ activity.published_date }}</p>
++      </li>
++    {% endfor %}
++  </ul>
++{% else %}
++  <p class="empty-state">No activities for the selected filter.</p>
++{% endif %}
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/activity_detail.html b/sites/phet_simulations/templates/activity_detail.html
+new file mode 100644
+index 0000000..daf66e2
+--- /dev/null
++++ b/sites/phet_simulations/templates/activity_detail.html
+@@ -0,0 +1,44 @@
++{% extends "base.html" %}
++{% block title %}{{ activity.title }} &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<nav class="breadcrumb" aria-label="Breadcrumb">
++  <a href="{{ url_for('index') }}">Home</a> /
++  <a href="{{ url_for('teachers') }}">For Teachers</a> /
++  <a href="{{ url_for('activities') }}">Activities</a> /
++  <span>{{ activity.title }}</span>
++</nav>
++
++<article class="activity-detail">
++  <h1>{{ activity.title }}</h1>
++  <p class="activity-meta">
++    By <strong>{{ activity.author }}</strong> &middot;
++    {{ activity.grade_level|capitalize }} &middot;
++    {{ activity.duration_min }} min &middot;
++    {{ activity.file_type }} &middot;
++    Published {{ activity.published_date }}
++  </p>
++
++  <section class="activity-section">
++    <h2>Overview</h2>
++    <p>{{ activity.description }}</p>
++  </section>
++
++  <section class="activity-section">
++    <h2>Used with this simulation</h2>
++    <p>
++      <a class="btn btn-primary" href="{{ url_for('simulation_detail', slug=activity.simulation.slug) }}">
++        Open {{ activity.simulation.title }} &raquo;
++      </a>
++    </p>
++  </section>
++
++  <section class="activity-section">
++    <h2>Download</h2>
++    <p>
++      <a class="btn btn-ghost" href="#" onclick="event.preventDefault(); alert('Mirror snapshot — download is disabled in benchmark mode.');">
++        Download {{ activity.file_type }} ({{ activity.download_count }} downloads)
++      </a>
++    </p>
++  </section>
++</article>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/base.html b/sites/phet_simulations/templates/base.html
+new file mode 100644
+index 0000000..7babf18
+--- /dev/null
++++ b/sites/phet_simulations/templates/base.html
+@@ -0,0 +1,100 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>{% block title %}{{ site_title }}{% endblock %}</title>
++  <meta name="description" content="{{ site_tagline }}">
++  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
++</head>
++<body>
++<header class="topbar">
++  <div class="container topbar-inner">
++    <a class="brand" href="{{ url_for('index') }}">
++      <span class="brand-mark">PhET</span>
++      <span class="brand-text">Interactive Simulations</span>
++    </a>
++    <nav class="primary-nav" aria-label="Primary">
++      <a href="{{ url_for('simulations') }}">Simulations</a>
++      <a href="{{ url_for('teachers') }}">For Teachers</a>
++      <a href="{{ url_for('translations') }}">Translations</a>
++      <a href="{{ url_for('about') }}">About</a>
++      <a href="{{ url_for('accessibility') }}">Accessibility</a>
++    </nav>
++    <form class="search-form" action="{{ url_for('search') }}" method="get" role="search">
++      <input type="search" name="q" placeholder="Search simulations" aria-label="Search">
++      <button type="submit">Search</button>
++    </form>
++    <div class="user-menu">
++      {% if current_user.is_authenticated %}
++        <a href="{{ url_for('account') }}" class="user-link">{{ current_user.name }}</a>
++        <a href="{{ url_for('logout') }}" class="user-link muted">Sign out</a>
++      {% else %}
++        <a href="{{ url_for('login') }}" class="user-link">Sign in</a>
++        <a href="{{ url_for('register') }}" class="user-link btn-mini">Sign up</a>
++      {% endif %}
++    </div>
++  </div>
++</header>
++
++{% with messages = get_flashed_messages(with_categories=true) %}
++  {% if messages %}
++    <div class="container flashes">
++      {% for category, msg in messages %}
++        <div class="flash flash-{{ category }}">{{ msg }}</div>
++      {% endfor %}
++    </div>
++  {% endif %}
++{% endwith %}
++
++<main class="container main">
++  {% block content %}{% endblock %}
++</main>
++
++<footer class="footer">
++  <div class="container footer-inner">
++    <div class="footer-col">
++      <h4>PhET</h4>
++      <ul>
++        <li><a href="{{ url_for('about') }}">About PhET</a></li>
++        <li><a href="{{ url_for('accessibility') }}">Accessibility</a></li>
++        <li><a href="{{ url_for('translations') }}">Translations</a></li>
++      </ul>
++    </div>
++    <div class="footer-col">
++      <h4>Explore</h4>
++      <ul>
++        <li><a href="{{ url_for('simulations') }}">All simulations</a></li>
++        {% for subject in primary_subjects %}
++          <li><a href="{{ url_for('simulations_by_subject', slug=subject.slug) }}">{{ subject.name }}</a></li>
++        {% endfor %}
++      </ul>
++    </div>
++    <div class="footer-col">
++      <h4>For Teachers</h4>
++      <ul>
++        <li><a href="{{ url_for('teachers') }}">Teacher resources</a></li>
++        <li><a href="{{ url_for('activities') }}">Activities</a></li>
++      </ul>
++    </div>
++    <div class="footer-col">
++      <h4>Account</h4>
++      <ul>
++        {% if current_user.is_authenticated %}
++          <li><a href="{{ url_for('account') }}">My account</a></li>
++          <li><a href="{{ url_for('logout') }}">Sign out</a></li>
++        {% else %}
++          <li><a href="{{ url_for('login') }}">Sign in</a></li>
++          <li><a href="{{ url_for('register') }}">Create account</a></li>
++        {% endif %}
++      </ul>
++    </div>
++  </div>
++  <div class="container footer-fineprint">
++    &copy; {{ current_year }} PhET Interactive Simulations &middot; University of Colorado Boulder (mirror snapshot for research)
++  </div>
++</footer>
++
++<script src="{{ url_for('static', filename='js/main.js') }}"></script>
++</body>
++</html>
+diff --git a/sites/phet_simulations/templates/category.html b/sites/phet_simulations/templates/category.html
+new file mode 100644
+index 0000000..6a590e6
+--- /dev/null
++++ b/sites/phet_simulations/templates/category.html
+@@ -0,0 +1,19 @@
++{% extends "base.html" %}
++{% block title %}{{ subject.name }} Simulations &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<header class="category-header" style="--tile-color: {{ subject.color }}">
++  <h1>{{ subject.name }}</h1>
++  <p>{{ subject.description }}</p>
++  <p class="category-count">{{ sims|length }} simulation{{ '' if sims|length == 1 else 's' }} in this category.</p>
++</header>
++
++{% if sims %}
++  <div class="sim-grid">
++    {% for sim in sims %}
++      {% include "_sim_card.html" %}
++    {% endfor %}
++  </div>
++{% else %}
++  <p class="empty-state">No simulations available in this category yet.</p>
++{% endif %}
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/index.html b/sites/phet_simulations/templates/index.html
+new file mode 100644
+index 0000000..ad38d06
+--- /dev/null
++++ b/sites/phet_simulations/templates/index.html
+@@ -0,0 +1,53 @@
++{% extends "base.html" %}
++{% block content %}
++<section class="hero">
++  <div class="hero-text">
++    <h1>Free interactive math &amp; science simulations</h1>
++    <p>Research-based simulations from the University of Colorado Boulder.
++       Browse {{ total_simulations }} simulations across physics, chemistry,
++       math, biology, and earth science &mdash; available in {{ total_languages }} languages.</p>
++    <p class="hero-actions">
++      <a class="btn btn-primary" href="{{ url_for('simulations') }}">Browse all simulations</a>
++      <a class="btn btn-ghost" href="{{ url_for('teachers') }}">For teachers</a>
++    </p>
++  </div>
++</section>
++
++<section class="subjects-grid" aria-label="Browse by subject">
++  {% for subject in primary_subjects %}
++    <a class="subject-tile" style="--tile-color: {{ subject.color }}"
++       href="{{ url_for('simulations_by_subject', slug=subject.slug) }}">
++      <span class="subject-icon" aria-hidden="true">{{ subject.icon[:1]|upper }}</span>
++      <span class="subject-name">{{ subject.name }}</span>
++      <span class="subject-desc">{{ subject.description }}</span>
++    </a>
++  {% endfor %}
++</section>
++
++<section class="row">
++  <h2 class="row-title">Featured simulations</h2>
++  <div class="sim-grid">
++    {% for sim in featured %}
++      {% include "_sim_card.html" %}
++    {% endfor %}
++  </div>
++</section>
++
++<section class="row">
++  <h2 class="row-title">New &amp; recently updated</h2>
++  <div class="sim-grid">
++    {% for sim in new_sims %}
++      {% include "_sim_card.html" %}
++    {% endfor %}
++  </div>
++</section>
++
++<section class="row">
++  <h2 class="row-title">Most played this month</h2>
++  <div class="sim-grid">
++    {% for sim in most_played %}
++      {% include "_sim_card.html" %}
++    {% endfor %}
++  </div>
++</section>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/login.html b/sites/phet_simulations/templates/login.html
+new file mode 100644
+index 0000000..f4ff3a5
+--- /dev/null
++++ b/sites/phet_simulations/templates/login.html
+@@ -0,0 +1,25 @@
++{% extends "base.html" %}
++{% block title %}Sign In &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<div class="auth-card">
++  <h1>Sign in to PhET</h1>
++  <p class="auth-sub">Sign in to save simulations, write notes, and access teacher resources.</p>
++
++  <form method="post" action="{{ url_for('login') }}">
++    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
++    <label>
++      Email
++      <input type="email" name="email" required autofocus autocomplete="email">
++    </label>
++    <label>
++      Password
++      <input type="password" name="password" required autocomplete="current-password">
++    </label>
++    <button type="submit" class="btn btn-primary btn-block">Sign in</button>
++  </form>
++
++  <p class="auth-foot">
++    Don't have an account? <a href="{{ url_for('register') }}">Create one now</a>.
++  </p>
++</div>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/register.html b/sites/phet_simulations/templates/register.html
+new file mode 100644
+index 0000000..8107261
+--- /dev/null
++++ b/sites/phet_simulations/templates/register.html
+@@ -0,0 +1,37 @@
++{% extends "base.html" %}
++{% block title %}Create Account &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<div class="auth-card">
++  <h1>Create your PhET account</h1>
++  <p class="auth-sub">A free account lets you save simulations and download teacher resources.</p>
++
++  <form method="post" action="{{ url_for('register') }}">
++    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
++    <label>
++      Full name
++      <input type="text" name="name" required autocomplete="name">
++    </label>
++    <label>
++      Email
++      <input type="email" name="email" required autocomplete="email">
++    </label>
++    <label>
++      Password (8+ characters)
++      <input type="password" name="password" required minlength="8" autocomplete="new-password">
++    </label>
++    <label>
++      Institution (optional)
++      <input type="text" name="institution" autocomplete="organization">
++    </label>
++    <label>
++      Country (optional)
++      <input type="text" name="country" autocomplete="country-name">
++    </label>
++    <button type="submit" class="btn btn-primary btn-block">Create account</button>
++  </form>
++
++  <p class="auth-foot">
++    Already have an account? <a href="{{ url_for('login') }}">Sign in</a>.
++  </p>
++</div>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/search.html b/sites/phet_simulations/templates/search.html
+new file mode 100644
+index 0000000..95d69c4
+--- /dev/null
++++ b/sites/phet_simulations/templates/search.html
+@@ -0,0 +1,25 @@
++{% extends "base.html" %}
++{% block title %}{% if query %}Search: {{ query }}{% else %}Search{% endif %} &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<h1 class="page-title">Search</h1>
++
++<form class="search-form-wide" method="get" action="{{ url_for('search') }}" role="search">
++  <input type="search" name="q" value="{{ query }}" placeholder="Search simulation titles or topics" autofocus>
++  <button type="submit" class="btn btn-primary">Search</button>
++</form>
++
++{% if query %}
++  <p class="page-subtitle">{{ total }} result{{ '' if total == 1 else 's' }} for &ldquo;{{ query }}&rdquo;</p>
++  {% if sims %}
++    <div class="sim-grid">
++      {% for sim in sims %}
++        {% include "_sim_card.html" %}
++      {% endfor %}
++    </div>
++  {% else %}
++    <p class="empty-state">No simulations matched your search. Try a shorter or more general term.</p>
++  {% endif %}
++{% else %}
++  <p class="page-subtitle">Enter a search term to find simulations by title or topic.</p>
++{% endif %}
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/simulation_detail.html b/sites/phet_simulations/templates/simulation_detail.html
+new file mode 100644
+index 0000000..35f4284
+--- /dev/null
++++ b/sites/phet_simulations/templates/simulation_detail.html
+@@ -0,0 +1,122 @@
++{% extends "base.html" %}
++{% block title %}{{ sim.title }} &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<nav class="breadcrumb" aria-label="Breadcrumb">
++  <a href="{{ url_for('index') }}">Home</a> /
++  <a href="{{ url_for('simulations') }}">Simulations</a> /
++  <span>{{ sim.title }}</span>
++</nav>
++
++<article class="sim-detail">
++  <header class="sim-detail-head">
++    <h1>{{ sim.title }}</h1>
++    <p class="sim-detail-tagline">{{ sim.short_description }}</p>
++    <ul class="badge-row">
++      {% if sim.is_html5 %}<li class="badge badge-html5">HTML5</li>{% endif %}
++      {% if sim.is_new %}<li class="badge badge-new">New</li>{% endif %}
++      {% if sim.is_featured %}<li class="badge badge-featured">Featured</li>{% endif %}
++      <li class="badge badge-version">v{{ sim.version }}</li>
++    </ul>
++  </header>
++
++  <div class="sim-detail-body">
++    <div class="sim-detail-main">
++      <div class="sim-detail-frame">
++        <span class="sim-detail-frame-label">{{ sim.title }}</span>
++        <button class="btn btn-primary sim-detail-play" type="button">Play simulation</button>
++      </div>
++
++      <section class="sim-detail-section">
++        <h2>About this simulation</h2>
++        <p>{{ sim.overview }}</p>
++      </section>
++
++      <section class="sim-detail-section">
++        <h2>Learning goals</h2>
++        <ul class="topic-list">
++          {% for topic in sim.topics() %}
++            <li>{{ topic|capitalize }}</li>
++          {% endfor %}
++        </ul>
++      </section>
++
++      {% if activities %}
++      <section class="sim-detail-section">
++        <h2>Teacher-submitted activities ({{ activities|length }})</h2>
++        <ul class="activity-list">
++          {% for activity in activities %}
++            <li>
++              <a href="{{ url_for('activity_detail', activity_id=activity.id) }}">{{ activity.title }}</a>
++              <span class="activity-meta">by {{ activity.author }} &middot; {{ activity.grade_level|capitalize }} &middot; {{ activity.duration_min }} min</span>
++            </li>
++          {% endfor %}
++        </ul>
++      </section>
++      {% endif %}
++
++      {% if related %}
++      <section class="sim-detail-section">
++        <h2>Related simulations</h2>
++        <div class="sim-grid sim-grid-small">
++          {% for sim in related %}
++            {% include "_sim_card.html" %}
++          {% endfor %}
++        </div>
++      </section>
++      {% endif %}
++    </div>
++
++    <aside class="sim-detail-side">
++      <div class="side-card">
++        <h3>Subjects</h3>
++        <ul>
++          {% for s in subjects %}
++            <li><a href="{{ url_for('simulations_by_subject', slug=s.slug) }}">{{ s.name }}</a></li>
++          {% endfor %}
++        </ul>
++      </div>
++      <div class="side-card">
++        <h3>Grade levels</h3>
++        <ul>
++          {% for g in grades %}
++            <li>{{ g.name }} <small>({{ g.age_range }})</small></li>
++          {% endfor %}
++        </ul>
++      </div>
++      <div class="side-card">
++        <h3>Available in</h3>
++        <ul class="lang-list">
++          {% for l in languages %}
++            <li><a href="{{ url_for('translation_detail', code=l.code) }}">{{ l.name }}</a></li>
++          {% endfor %}
++        </ul>
++      </div>
++      <div class="side-card">
++        <h3>Statistics</h3>
++        <ul>
++          <li>Plays: {{ sim.play_count }}</li>
++          <li>Downloads: {{ sim.download_count }}</li>
++          <li>Runtime: {{ sim.runtime_minutes }} min</li>
++          <li>Released: {{ sim.release_date }}</li>
++        </ul>
++      </div>
++      <div class="side-card">
++        {% if current_user.is_authenticated %}
++          <form class="save-form" data-sim-id="{{ sim.id }}">
++            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
++            {% if is_saved %}
++              <button type="button" class="btn btn-ghost" data-action="unsave">Remove from saved</button>
++            {% else %}
++              <button type="button" class="btn btn-primary" data-action="save">Save to my account</button>
++            {% endif %}
++            <p class="save-status" aria-live="polite"></p>
++          </form>
++        {% else %}
++          <a href="{{ url_for('login', next=url_for('simulation_detail', slug=sim.slug)) }}"
++             class="btn btn-primary btn-block">Sign in to save</a>
++        {% endif %}
++      </div>
++    </aside>
++  </div>
++</article>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/simulations.html b/sites/phet_simulations/templates/simulations.html
+new file mode 100644
+index 0000000..42f2f2a
+--- /dev/null
++++ b/sites/phet_simulations/templates/simulations.html
+@@ -0,0 +1,68 @@
++{% extends "base.html" %}
++{% block title %}All Simulations &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<h1 class="page-title">All Simulations</h1>
++<p class="page-subtitle">{{ total }} simulation{{ '' if total == 1 else 's' }} matching your filters.</p>
++
++<form class="filter-bar" method="get" action="{{ url_for('simulations') }}">
++  <label>
++    Subject
++    <select name="subject">
++      <option value="">All subjects</option>
++      {% for s in primary_subjects %}
++        <option value="{{ s.slug }}" {% if s.slug == subject %}selected{% endif %}>{{ s.name }}</option>
++      {% endfor %}
++    </select>
++  </label>
++  <label>
++    Grade level
++    <select name="grade">
++      <option value="">All grade levels</option>
++      {% for g in grade_levels %}
++        <option value="{{ g.slug }}" {% if g.slug == grade %}selected{% endif %}>{{ g.name }}</option>
++      {% endfor %}
++    </select>
++  </label>
++  <label>
++    Language
++    <select name="language">
++      <option value="">Any language</option>
++      {% for l in languages %}
++        <option value="{{ l.code }}" {% if l.code == language %}selected{% endif %}>{{ l.name }}</option>
++      {% endfor %}
++    </select>
++  </label>
++  <label>
++    Sort by
++    <select name="sort">
++      <option value="title" {% if sort == 'title' %}selected{% endif %}>Title (A-Z)</option>
++      <option value="newest" {% if sort == 'newest' %}selected{% endif %}>Newest</option>
++      <option value="popular" {% if sort == 'popular' %}selected{% endif %}>Most played</option>
++    </select>
++  </label>
++  <button type="submit" class="btn btn-primary">Apply filters</button>
++  <a href="{{ url_for('simulations') }}" class="btn btn-ghost">Reset</a>
++</form>
++
++{% if sims %}
++  <div class="sim-grid">
++    {% for sim in sims %}
++      {% include "_sim_card.html" %}
++    {% endfor %}
++  </div>
++
++  {% if total_pages > 1 %}
++    <nav class="pager" aria-label="Pagination">
++      {% if page > 1 %}
++        <a href="{{ url_for('simulations', subject=subject, grade=grade, language=language, sort=sort, page=page-1) }}">&laquo; Previous</a>
++      {% endif %}
++      <span class="pager-status">Page {{ page }} of {{ total_pages }}</span>
++      {% if page < total_pages %}
++        <a href="{{ url_for('simulations', subject=subject, grade=grade, language=language, sort=sort, page=page+1) }}">Next &raquo;</a>
++      {% endif %}
++    </nav>
++  {% endif %}
++{% else %}
++  <p class="empty-state">No simulations match the selected filters. Try clearing one of the filters above.</p>
++{% endif %}
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/teachers.html b/sites/phet_simulations/templates/teachers.html
+new file mode 100644
+index 0000000..f1d853d
+--- /dev/null
++++ b/sites/phet_simulations/templates/teachers.html
+@@ -0,0 +1,32 @@
++{% extends "base.html" %}
++{% block title %}For Teachers &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<header class="teachers-hero">
++  <h1>Resources for teachers</h1>
++  <p>Lesson plans, activities, and tips for using PhET simulations in your classroom.
++     Activities are contributed by educators and aligned to common curriculum standards.</p>
++  <p>
++    <a class="btn btn-primary" href="{{ url_for('activities') }}">Browse all activities</a>
++    <a class="btn btn-ghost" href="{{ url_for('simulations') }}">Find a simulation</a>
++  </p>
++</header>
++
++<section class="row">
++  <h2 class="row-title">Most-downloaded activities</h2>
++  <ul class="activity-grid">
++    {% for activity in featured_activities %}
++      <li class="activity-card">
++        <h3><a href="{{ url_for('activity_detail', activity_id=activity.id) }}">{{ activity.title }}</a></h3>
++        <p class="activity-meta">
++          For <strong>{{ activity.simulation.title }}</strong> &middot;
++          {{ activity.grade_level|capitalize }} &middot;
++          {{ activity.duration_min }} min &middot;
++          {{ activity.file_type }}
++        </p>
++        <p>{{ activity.description }}</p>
++        <p class="activity-author">By {{ activity.author }} &middot; {{ activity.download_count }} downloads</p>
++      </li>
++    {% endfor %}
++  </ul>
++</section>
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/translation_detail.html b/sites/phet_simulations/templates/translation_detail.html
+new file mode 100644
+index 0000000..59aacfe
+--- /dev/null
++++ b/sites/phet_simulations/templates/translation_detail.html
+@@ -0,0 +1,25 @@
++{% extends "base.html" %}
++{% block title %}{{ language.name }} translations &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<nav class="breadcrumb" aria-label="Breadcrumb">
++  <a href="{{ url_for('index') }}">Home</a> /
++  <a href="{{ url_for('translations') }}">Translations</a> /
++  <span>{{ language.name }}</span>
++</nav>
++
++<h1 class="page-title">{{ language.name }} <small>({{ language.native_name }})</small></h1>
++<p class="page-subtitle">
++  {{ sims|length }} simulations available in {{ language.name }}.
++  Language code: <code>{{ language.code }}</code>{% if language.is_rtl %} &middot; right-to-left script{% endif %}.
++</p>
++
++{% if sims %}
++  <div class="sim-grid">
++    {% for sim in sims %}
++      {% include "_sim_card.html" %}
++    {% endfor %}
++  </div>
++{% else %}
++  <p class="empty-state">No simulations are translated to this language yet.</p>
++{% endif %}
++{% endblock %}
+diff --git a/sites/phet_simulations/templates/translations.html b/sites/phet_simulations/templates/translations.html
+new file mode 100644
+index 0000000..889467c
+--- /dev/null
++++ b/sites/phet_simulations/templates/translations.html
+@@ -0,0 +1,21 @@
++{% extends "base.html" %}
++{% block title %}Translations &middot; {{ site_title }}{% endblock %}
++{% block content %}
++<h1 class="page-title">Translations</h1>
++<p class="page-subtitle">
++  PhET simulations are translated into {{ languages|length }} languages by educators and volunteers worldwide.
++  Select a language to see which simulations are available.
++</p>
++
++<ul class="language-grid">
++  {% for lang in languages %}
++    <li class="language-card{% if lang.is_rtl %} rtl{% endif %}">
++      <a href="{{ url_for('translation_detail', code=lang.code) }}">
++        <span class="language-name">{{ lang.name }}</span>
++        <span class="language-native">{{ lang.native_name }}</span>
++        <span class="language-count">{{ lang.sim_count }} simulations</span>
++      </a>
++    </li>
++  {% endfor %}
++</ul>
++{% endblock %}
+diff --git a/websyn_start.sh b/websyn_start.sh
+index 72defad..357f156 100644
+--- a/websyn_start.sh
++++ b/websyn_start.sh
+@@ -5,7 +5,7 @@ set -e
+ 
+ SITES=(allrecipes amazon apple arxiv bbc_news booking github
+        google_flights google_map google_search huggingface wolfram_alpha
+-       cambridge_dictionary coursera espn)
++       cambridge_dictionary coursera espn phet_simulations)
+ BASE_PORT=40000
+ PID_DIR=/tmp/websyn_pids
+ mkdir -p "$PID_DIR"
+@@ -17,7 +17,7 @@ for d in "${SITES[@]}"; do
+     cp -a "/opt/WebSyn/$d/instance_seed" "/opt/WebSyn/$d/instance"
+ done
+ 
+-echo "[WebSyn] Starting 15 sites on ports ${BASE_PORT}-$((BASE_PORT + 14))..."
++echo "[WebSyn] Starting 16 sites on ports ${BASE_PORT}-$((BASE_PORT + 15))..."
+ for i in "${!SITES[@]}"; do
+     site="${SITES[$i]}"
+     port=$((BASE_PORT + i))
+@@ -51,8 +51,8 @@ except Exception: exit(1)
+             ready=$((ready + 1))
+         fi
+     done
+-    echo "  [${elapsed}/${max_wait}s] ${ready}/15 sites ready"
+-    if [ $ready -eq 15 ]; then
++    echo "  [${elapsed}/${max_wait}s] ${ready}/16 sites ready"
++    if [ $ready -eq 16 ]; then
+         break
+     fi
+ done
+-- 
+2.43.0
+
