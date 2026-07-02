@@ -1,0 +1,376 @@
+From b5e49ea2c295a4db4a725ff6f0bc9638f20db109 Mon Sep 17 00:00:00 2001
+From: Zhongyang Li <lzy01241010@gmail.com>
+Date: Thu, 2 Jul 2026 00:35:11 +0000
+Subject: [PATCH] fix(phet_simulations): address PR #29 review feedback
+
+Addresses all points from MufanQiu's review:
+
+1. Homepage now renders simulation grids (BLOCKER). index.html displays
+   the route's featured / new_sims / most_played context in three
+   subject-section rows (20 sim cards), so task --41 is solvable from /.
+
+2. 'New' release filter is functional (MAJOR). simulations() now reads
+   release=new (is_new) and release=updated (released >= 2024-01-01);
+   the sidebar checkboxes persist state and the active-filter chip,
+   sort, and pagination links carry the param. Task --21 is solvable
+   via UI (answer: 7 New sims, all released 2025).
+
+3. No DB mutation on GET (MAJOR). Removed play_count increment in
+   simulation_detail and download_count increment in activity_detail;
+   counts are now fixed seed data, so tasks --6/--31/--41 have
+   deterministic answers.
+
+4. Seed/task disambiguation (MINOR):
+   - Activities carry explicit pairwise-distinct download counts;
+     unique most-downloaded = Net Force Investigation (8742), paired
+     with Forces and Motion: Basics (task --12).
+   - Sim versions derived deterministically from seed constants
+     (47 distinct versions; Wave Interference = 1.5.2, task --28).
+   - Tasks --6, --24, --28, --31 reworded with tighter constraints so
+     each has exactly one valid answer (verified programmatically).
+
+Seed DB rebuilt; reset cycle remains byte-idempotent
+(md5 48ca438b8ac6dab37a6503a4e5574503). 66/66 routes return 200.
+New phet_simulations.tar.gz must be re-uploaded to the HF dataset and
+.assets-revision repinned to the HF merge SHA (separate commit).
+---
+ sites/phet_simulations/app.py                 | 57 ++++++++++++-------
+ sites/phet_simulations/tasks.jsonl            |  8 +--
+ sites/phet_simulations/templates/index.html   | 36 ++++++++++++
+ .../templates/simulations.html                | 26 ++++++---
+ 4 files changed, 93 insertions(+), 34 deletions(-)
+
+diff --git a/sites/phet_simulations/app.py b/sites/phet_simulations/app.py
+index 34bf42f..107acbd 100644
+--- a/sites/phet_simulations/app.py
++++ b/sites/phet_simulations/app.py
+@@ -256,6 +256,7 @@ def simulations():
+     subject = request.args.get("subject", "").strip()
+     grade = request.args.get("grade", "").strip()
+     language = request.args.get("language", "").strip()
++    release = request.args.get("release", "").strip()
+     sort = request.args.get("sort", "title")
+     view = request.args.get("view", "filter").strip()
+     page = max(int(request.args.get("page", 1)), 1)
+@@ -268,6 +269,11 @@ def simulations():
+         query = query.filter(Simulation.grades_json.like(f'%"{grade}"%'))
+     if language:
+         query = query.filter(Simulation.languages_json.like(f'%"{language}"%'))
++    if release == "new":
++        query = query.filter_by(is_new=True)
++    elif release == "updated":
++        # "Recently updated" in this snapshot = released in 2024 or later.
++        query = query.filter(Simulation.release_date >= date(2024, 1, 1))
+ 
+     if sort == "newest":
+         query = query.order_by(Simulation.release_date.desc())
+@@ -280,7 +286,9 @@ def simulations():
+     sims = query.offset((page - 1) * per_page).limit(per_page).all()
+     total_pages = max((total + per_page - 1) // per_page, 1)
+ 
+-    any_filter_active = bool(subject or grade or language or sort != "title")
++    any_filter_active = bool(
++        subject or grade or language or release or sort != "title"
++    )
+     view_tab = view if view in ("browse", "filter", "customize") else "filter"
+ 
+     sims_by_subject = {}
+@@ -304,6 +312,7 @@ def simulations():
+         subject=subject,
+         grade=grade,
+         language=language,
++        release=release,
+         sort=sort,
+         view_tab=view_tab,
+         languages=Language.query.order_by(Language.name).all(),
+@@ -327,9 +336,9 @@ def simulations_by_subject(slug):
+ 
+ @app.route("/simulation/<slug>")
+ def simulation_detail(slug):
++    # Read-only: GET must never mutate the DB, or task answers that
++    # reference play counts drift between visits.
+     sim = Simulation.query.filter_by(slug=slug).first_or_404()
+-    sim.play_count = (sim.play_count or 0) + 1
+-    db.session.commit()
+ 
+     subjects_full = [
+         s for s in Subject.query.filter(Subject.slug.in_(sim.subjects())).all()
+@@ -438,9 +447,8 @@ def activities():
+ 
+ @app.route("/teachers/activity/<int:activity_id>")
+ def activity_detail(activity_id):
++    # Read-only: download counts are fixed seed data (see ACTIVITIES_SEED).
+     activity = Activity.query.get_or_404(activity_id)
+-    activity.download_count = (activity.download_count or 0) + 1
+-    db.session.commit()
+     return render_template("activity_detail.html", activity=activity)
+ 
+ 
+@@ -1059,61 +1067,64 @@ SIMULATIONS_SEED = [
+ ]
+ 
+ 
++# Download counts are explicit and pairwise-distinct so "most downloaded"
++# has exactly one answer (Net Force Investigation, 8742).
+ ACTIVITIES_SEED = [
++    # (sim_title, title, author, grade, duration_min, downloads, description)
+     ("Forces and Motion: Basics", "Net Force Investigation",
+-     "Dr. Trish Loeblein", "high", 50,
++     "Dr. Trish Loeblein", "high", 50, 8742,
+      "Students predict, observe, and explain the motion of objects with "
+      "balanced and unbalanced forces using friction and applied force."),
+     ("Build an Atom", "Atomic Structure Lab",
+-     "Emily Moore", "middle", 45,
++     "Emily Moore", "middle", 45, 7310,
+      "Build atoms of the first 10 elements, identify subatomic particles, "
+      "and explore how protons determine the element."),
+     ("Balancing Chemical Equations", "Coefficient Practice",
+-     "Yuen-Ying Carpenter", "high", 60,
++     "Yuen-Ying Carpenter", "high", 60, 6485,
+      "Practice balancing combustion, synthesis, and decomposition reactions "
+      "using the conservation of mass."),
+     ("States of Matter", "Phase Change Inquiry",
+-     "Sam McKagan", "middle", 40,
++     "Sam McKagan", "middle", 40, 5121,
+      "Investigate the relationship between temperature, kinetic energy, "
+      "and phase transitions for water, neon, oxygen, and argon."),
+     ("Natural Selection", "Evolution of Bunnies",
+-     "Wendy Adams", "high", 55,
++     "Wendy Adams", "high", 55, 6893,
+      "Model how variation, environment, and selection pressure together "
+      "drive allele frequency change across generations."),
+     ("Gravity and Orbits", "Modeling the Solar System",
+-     "Noah Finkelstein", "middle", 50,
++     "Noah Finkelstein", "middle", 50, 5764,
+      "Manipulate masses and distances to explore how gravitational force "
+      "shapes planetary orbits in our solar system."),
+     ("pH Scale", "Acids and Bases in the Kitchen",
+-     "Kelly Lancaster", "middle", 40,
++     "Kelly Lancaster", "middle", 40, 4937,
+      "Predict, measure, and rank common household solutions by pH and "
+      "categorize each as acid, base, or neutral."),
+     ("Plate Tectonics", "Boundary Identification",
+-     "Karina Hensberry", "high", 45,
++     "Karina Hensberry", "high", 45, 3608,
+      "Use animations to classify convergent, divergent, and transform "
+      "boundaries and connect each to real-world geologic features."),
+     ("Greenhouse Effect", "Climate Modeling Lab",
+-     "Trish Loeblein", "high", 60,
++     "Trish Loeblein", "high", 60, 5342,
+      "Model how atmospheric composition affects equilibrium temperature "
+      "with and without greenhouse gases."),
+     ("Circuit Construction Kit: DC", "Series and Parallel",
+-     "John De La Cruz", "high", 50,
++     "John De La Cruz", "high", 50, 6178,
+      "Compare current and voltage in series vs parallel arrangements "
+      "and verify Kirchhoff's laws empirically."),
+     ("Fractions: Intro", "Equivalent Fractions Game",
+-     "Amanda McGarry", "elementary", 30,
++     "Amanda McGarry", "elementary", 30, 4215,
+      "Use bar models, number lines, and circle models to identify "
+      "equivalent fractions and develop fluency."),
+     ("Energy Skate Park", "Conservation of Energy",
+-     "Karina Hensberry", "high", 55,
++     "Karina Hensberry", "high", 55, 7026,
+      "Track potential, kinetic, thermal, and total energy as a skater "
+      "moves through changing terrain."),
+     ("Density", "Identify the Mystery Block",
+-     "Emily Moore", "middle", 35,
++     "Emily Moore", "middle", 35, 3891,
+      "Use mass and volume measurements to identify the material of "
+      "unknown solid blocks and explain buoyancy in water."),
+     ("Graphing Lines", "Slope-Intercept Form",
+-     "Dr. Karina Hensberry", "middle", 40,
++     "Dr. Karina Hensberry", "middle", 40, 4560,
+      "Investigate how m and b transform the line y = mx + b and apply "
+      "this to real-world rate problems."),
+ ]
+@@ -1169,6 +1180,9 @@ def seed_simulations():
+          featured, is_new, runtime, year, month, day, plays) = row
+         slug = _slug(title)
+         languages = ["en"] + list(extra_langs)
++        # Version derived deterministically from stable seed constants so
++        # sims carry distinct, reproducible version strings (task --28).
++        version = f"{1 + plays % 3}.{runtime % 10}.{day % 10}"
+         sim = Simulation(
+             slug=slug,
+             title=title,
+@@ -1178,6 +1192,7 @@ def seed_simulations():
+             grades_json=json.dumps(grades),
+             topics_json=json.dumps(topics),
+             languages_json=json.dumps(languages),
++            version=version,
+             is_html5=True,
+             is_featured=featured,
+             is_new=is_new,
+@@ -1206,7 +1221,7 @@ def seed_simulations():
+ def seed_activities():
+     if Activity.query.count() > 0:
+         return
+-    for sim_title, title, author, grade, duration, desc in ACTIVITIES_SEED:
++    for sim_title, title, author, grade, duration, downloads, desc in ACTIVITIES_SEED:
+         sim = Simulation.query.filter_by(slug=_slug(sim_title)).first()
+         if not sim:
+             continue
+@@ -1218,7 +1233,7 @@ def seed_activities():
+             duration_min=duration,
+             description=desc,
+             file_type="PDF",
+-            download_count=max(duration * 137 % 9000, 350),
++            download_count=downloads,
+             published_date=date(2024, ((duration % 12) + 1), 15),
+         ))
+     db.session.commit()
+diff --git a/sites/phet_simulations/tasks.jsonl b/sites/phet_simulations/tasks.jsonl
+index b60e8ed..e7b6191 100644
+--- a/sites/phet_simulations/tasks.jsonl
++++ b/sites/phet_simulations/tasks.jsonl
+@@ -4,7 +4,7 @@
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--3", "ques": "Find the 'Gravity and Orbits' simulation and report what subjects it is tagged with, what grade levels it targets, and when it was released.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--4", "ques": "Find a featured biology simulation about evolution and report its short description and target grade levels.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--5", "ques": "Search the PhET catalog for simulations matching 'DNA' and report how many results are returned.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+-{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--6", "ques": "Find a math simulation suitable for middle school students that covers probability, and report its play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--6", "ques": "Find the math simulation about probability that is suitable for middle school, high school, and university students, and report its play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--7", "ques": "Open the Translations page on PhET, find Chinese (Simplified), and report how many simulations are available in that language.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--8", "ques": "Find all simulations available in Arabic on PhET, and report whether any of them are tagged as 'New'.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--9", "ques": "List three languages PhET simulations are translated into that use a right-to-left script.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+@@ -22,14 +22,14 @@
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--21", "ques": "Filter the catalog to show only simulations tagged 'New', and report how many are released in 2025.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--22", "ques": "Find the 'Circuit Construction Kit: DC' simulation and report the full list of languages it is available in.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--23", "ques": "Browse the biology category and report which simulations are appropriate for university-level students.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+-{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--24", "ques": "Look up an elementary-school physics simulation about magnets, and report its short description.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--24", "ques": "Look up the elementary-school simulation about magnets that is tagged with both Physics and Earth Science, and report its short description.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--25", "ques": "On the PhET For Teachers page, find a high-school activity longer than 50 minutes and report its title and author.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--26", "ques": "Find a simulation about the greenhouse effect or climate, and report its full overview paragraph.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--27", "ques": "Search for 'genetics' simulations on PhET and report which subjects are covered.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+-{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--28", "ques": "Find a simulation about waves and interference, and report what version it is currently at.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--28", "ques": "Open the 'Wave Interference' simulation page and report its current version number.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--29", "ques": "On the PhET catalog, sort simulations by newest first and list the five most recently released.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--30", "ques": "Filter the catalog to show only elementary-school simulations and report how many are available.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+-{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--31", "ques": "Find a biology simulation related to predator-prey or population dynamics and report its play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
++{"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--31", "ques": "Find the biology simulation about predator-prey population cycles that is suitable for middle school students, and report its play count.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--32", "ques": "Browse the PhET catalog and identify a simulation that is tagged as both 'Physics' and 'Math'.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--33", "ques": "Open the Translations page, find Japanese, and click through to view all simulations available in Japanese.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+ {"web_name": "PhET Interactive Simulations", "id": "PhET Interactive Simulations--34", "ques": "Find the 'Natural Selection' simulation and report its target grade levels and three topics it covers.", "web": "http://localhost:40015/", "upstream_url": "https://phet.colorado.edu/"}
+diff --git a/sites/phet_simulations/templates/index.html b/sites/phet_simulations/templates/index.html
+index 2b374d6..f5a2bca 100644
+--- a/sites/phet_simulations/templates/index.html
++++ b/sites/phet_simulations/templates/index.html
+@@ -44,6 +44,42 @@
+     </a>
+   {% endfor %}
+ </section>
++
++{% if featured %}
++<section class="subject-section" aria-label="Featured simulations">
++  <div class="subject-section-head">
++    <h2>Featured Simulations</h2>
++    <a class="more" href="{{ url_for('simulations') }}">View all &raquo;</a>
++  </div>
++  <div class="sim-grid">
++    {% for sim in featured %}{% include "_sim_card.html" %}{% endfor %}
++  </div>
++</section>
++{% endif %}
++
++{% if new_sims %}
++<section class="subject-section" aria-label="New simulations">
++  <div class="subject-section-head">
++    <h2>New Sims</h2>
++    <a class="more" href="{{ url_for('simulations', release='new') }}">View all &raquo;</a>
++  </div>
++  <div class="sim-grid">
++    {% for sim in new_sims %}{% include "_sim_card.html" %}{% endfor %}
++  </div>
++</section>
++{% endif %}
++
++{% if most_played %}
++<section class="subject-section" aria-label="Most played simulations">
++  <div class="subject-section-head">
++    <h2>Most Played</h2>
++    <a class="more" href="{{ url_for('simulations', sort='popular') }}">View all &raquo;</a>
++  </div>
++  <div class="sim-grid">
++    {% for sim in most_played %}{% include "_sim_card.html" %}{% endfor %}
++  </div>
++</section>
++{% endif %}
+ {% endblock %}
+ 
+ {% block full_bleed_top %}{% endblock %}
+diff --git a/sites/phet_simulations/templates/simulations.html b/sites/phet_simulations/templates/simulations.html
+index 693e54d..6babf16 100644
+--- a/sites/phet_simulations/templates/simulations.html
++++ b/sites/phet_simulations/templates/simulations.html
+@@ -87,11 +87,13 @@
+           </ul>
+         </details>
+ 
+-        <details class="filter-group">
++        <details class="filter-group" {% if release %}open{% endif %}>
+           <summary>Release Type</summary>
+           <ul>
+-            <li><label><input type="checkbox" name="release" value="new"> New</label></li>
+-            <li><label><input type="checkbox" name="release" value="updated"> Recently updated</label></li>
++            <li><label><input type="checkbox" name="release" value="new"
++              {% if release == 'new' %}checked{% endif %}> New</label></li>
++            <li><label><input type="checkbox" name="release" value="updated"
++              {% if release == 'updated' %}checked{% endif %}> Recently updated</label></li>
+           </ul>
+         </details>
+ 
+@@ -131,26 +133,32 @@
+           {% if subject %}
+             <span class="results-chip">
+               {{ subject|upper }}
+-              <a href="{{ url_for('simulations', view='filter', grade=grade, language=language, sort=sort) }}" aria-label="Clear">&times;</a>
++              <a href="{{ url_for('simulations', view='filter', grade=grade, language=language, release=release, sort=sort) }}" aria-label="Clear">&times;</a>
+             </span>
+           {% endif %}
+           {% if grade %}
+             <span class="results-chip">
+               {{ grade|upper }}
+-              <a href="{{ url_for('simulations', view='filter', subject=subject, language=language, sort=sort) }}" aria-label="Clear">&times;</a>
++              <a href="{{ url_for('simulations', view='filter', subject=subject, language=language, release=release, sort=sort) }}" aria-label="Clear">&times;</a>
+             </span>
+           {% endif %}
+           {% if language %}
+             <span class="results-chip">
+               {{ language|upper }}
+-              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, sort=sort) }}" aria-label="Clear">&times;</a>
++              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, release=release, sort=sort) }}" aria-label="Clear">&times;</a>
++            </span>
++          {% endif %}
++          {% if release %}
++            <span class="results-chip">
++              {{ 'NEW' if release == 'new' else 'RECENTLY UPDATED' }}
++              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, language=language, sort=sort) }}" aria-label="Clear">&times;</a>
+             </span>
+           {% endif %}
+         </div>
+         <div class="results-sort">
+           <label>Sort by</label>
+           <select onchange="window.location.href=this.value">
+-            {% set base = url_for('simulations', view='filter', subject=subject, grade=grade, language=language) %}
++            {% set base = url_for('simulations', view='filter', subject=subject, grade=grade, language=language, release=release) %}
+             <option value="{{ base }}&sort=newest"   {% if sort == 'newest' %}selected{% endif %}>Newest</option>
+             <option value="{{ base }}&sort=title"    {% if sort == 'title' %}selected{% endif %}>Title (A-Z)</option>
+             <option value="{{ base }}&sort=popular"  {% if sort == 'popular' %}selected{% endif %}>Most played</option>
+@@ -165,11 +173,11 @@
+         {% if total_pages > 1 %}
+           <nav class="pager" aria-label="Pagination">
+             {% if page > 1 %}
+-              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, language=language, sort=sort, page=page-1) }}">&laquo; Previous</a>
++              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, language=language, release=release, sort=sort, page=page-1) }}">&laquo; Previous</a>
+             {% endif %}
+             <span class="pager-status">Page {{ page }} of {{ total_pages }}</span>
+             {% if page < total_pages %}
+-              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, language=language, sort=sort, page=page+1) }}">Next &raquo;</a>
++              <a href="{{ url_for('simulations', view='filter', subject=subject, grade=grade, language=language, release=release, sort=sort, page=page+1) }}">Next &raquo;</a>
+             {% endif %}
+           </nav>
+         {% endif %}
+-- 
+2.43.0
+
