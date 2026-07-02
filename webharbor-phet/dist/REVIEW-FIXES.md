@@ -9,9 +9,10 @@ push, and reply to the review.
 
 - `0001-fix-phet_simulations-address-PR-29-review-feedback.patch`
   — git-am patch, 4 files changed (+93/−34)
-- `phet_simulations.tar.gz` — regenerated asset bundle; the seed DB
-  changed (new md5 `48ca438b8ac6dab37a6503a4e5574503`), so the old
-  tarball on your HF PR is stale and MUST be replaced.
+- `phet_simulations.tar.gz` — carries the regenerated seed DB
+  (new md5 `48ca438b8ac6dab37a6503a4e5574503`). ⚠️ Seed-only bundle:
+  extract the .db from it, but repack the HF tarball from your local
+  tree so your site images are preserved (see step 2).
 
 ## What the patch fixes (mapping to the review)
 
@@ -37,9 +38,25 @@ cd WebHarbor
 git checkout add-phet-simulations
 git am ~/Downloads/0001-fix-phet_simulations-address-PR-29-review-feedback.patch
 
-# 2. Replace the tarball on your HF PR (same file path, new content)
+# 2. Swap ONLY the seed DB into your local tree, then REPACK the tarball
+#    from your working copy.
+#
+#    ⚠️ DO NOT upload the delivered phet_simulations.tar.gz directly to HF —
+#    it contains only instance_seed/. Your site's images
+#    (static/images/ui/*.svg, static/images/sims/*.png) live in your local
+#    tree and in your current HF tarball; uploading the seed-only tarball
+#    would drop them. Extract just the .db and repack locally:
+tar -xzf ~/Downloads/phet_simulations.tar.gz -C sites \
+    phet_simulations/instance_seed/phet_simulations.db
+md5sum sites/phet_simulations/instance_seed/phet_simulations.db
+# → 48ca438b8ac6dab37a6503a4e5574503
+
+./scripts/extract_assets.sh ../wh-static-pr/ phet_simulations
+# packs instance_seed + static/images + external_cache from YOUR tree
+tar -tzf ../wh-static-pr/phet_simulations.tar.gz | head   # sanity: images present
+
 hf upload <your-hf-username>/WebHarbor \
-    ~/Downloads/phet_simulations.tar.gz \
+    ../wh-static-pr/phet_simulations.tar.gz \
     phet_simulations.tar.gz --repo-type dataset
 # If your HF PR is still open this updates it in place.
 # Ask the maintainer to merge the HF PR, then copy the MERGE COMMIT SHA.
