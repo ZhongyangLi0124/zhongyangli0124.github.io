@@ -465,7 +465,7 @@ ninja.data = [{
         title: 'CV',
         section: 'Socials',
         handler: () => {
-          window.open("/assets/pdf/example_pdf.pdf", "_blank");
+          window.open("/assets/pdf/ZhongyangLi_PhD_CV.pdf", "_blank");
         },
       },{
         id: 'social-email',
@@ -473,13 +473,6 @@ ninja.data = [{
         section: 'Socials',
         handler: () => {
           window.open("mailto:%6C%69.%31%37%32%35%38@%6F%73%75.%65%64%75", "_blank");
-        },
-      },{
-        id: 'social-rss',
-        title: 'RSS Feed',
-        section: 'Socials',
-        handler: () => {
-          window.open("/feed.xml", "_blank");
         },
       },{
         id: 'social-scholar',
