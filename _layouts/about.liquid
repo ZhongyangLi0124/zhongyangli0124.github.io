@@ -25,7 +25,7 @@ layout: default
             {% assign profile_image_class = 'img-fluid z-depth-1
       rounded' %}
           {% endif %}
-          {% capture sizes %}(min-width: 576px) min(24vw, 220px), 220px{% endcapture %}
+          {% capture sizes %}(min-width: 576px) min(20vw, 180px), 180px{% endcapture %}
           {%
             include figure.liquid loading="eager" path=profile_image_path class=profile_image_class sizes=sizes alt=page.profile.image
             cache_bust=true
