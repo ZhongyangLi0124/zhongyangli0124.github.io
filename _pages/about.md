@@ -2,7 +2,7 @@
 layout: about
 title: About
 permalink: /
-subtitle: <a href='mailto:li.17258@buckeyemail.osu.edu'>li.17258@buckeyemail.osu.edu</a>
+subtitle: <a href='mailto:li.17258@osu.edu'>li.17258@osu.edu</a>
 
 profile:
   align: right
